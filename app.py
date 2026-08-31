@@ -1535,15 +1535,64 @@ st.markdown(
         margin-top:12px;
     }
 
+    /* --------------------------------------------------------
+       BUTTONS
+       Keep all app buttons readable even when Streamlit/theme
+       styles inject dark text into button labels.
+       -------------------------------------------------------- */
     div.stButton > button {
         border-radius:12px;
         font-weight:800;
+        color:#FFFFFF !important;
     }
 
+    div.stButton > button *,
+    div.stButton > button p,
+    div.stButton > button span,
+    div.stButton > button div {
+        color:#FFFFFF !important;
+    }
+
+    /* Suggestion buttons */
+    div.stButton > button:not([kind="primary"]) {
+        background:#151922 !important;
+        border:1px solid #252B35 !important;
+        color:#FFFFFF !important;
+    }
+
+    div.stButton > button:not([kind="primary"]):hover {
+        background:#222833 !important;
+        border-color:#2F3845 !important;
+        color:#FFFFFF !important;
+    }
+
+    /* Main Find button */
     div.stButton > button[kind="primary"] {
-        background:linear-gradient(90deg,#07522F,#0B7041);
-        border:none;
-        color:white;
+        background:linear-gradient(90deg,#07522F,#0B7041) !important;
+        border:none !important;
+        color:#FFFFFF !important;
+    }
+
+    div.stButton > button[kind="primary"]:hover {
+        background:linear-gradient(90deg,#064629,#096239) !important;
+        color:#FFFFFF !important;
+    }
+
+    /* Input text stays readable on the dark search field */
+    div[data-testid="stTextInput"] input {
+        color:#FFFFFF !important;
+        background:#262730 !important;
+    }
+
+    div[data-testid="stTextInput"] input::placeholder {
+        color:#B9BEC8 !important;
+        opacity:1 !important;
+    }
+
+    /* File uploader browse button */
+    div[data-testid="stFileUploader"] button,
+    div[data-testid="stFileUploader"] button * {
+        color:#FFFFFF !important;
     }
 
     div[data-testid="stFileUploaderDropzone"] {
