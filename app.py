@@ -1571,24 +1571,7 @@ st.markdown(
 # ============================================================
 
 st.markdown(
-    """
-    <div class="picky-header">
-        <div class="brand-wrap">
-            <div class="brand-icon">📚🔎</div>
-            <div>
-                <div class="brand-name">Picky</div>
-                <div class="brand-sub">Pick Your Book</div>
-            </div>
-        </div>
-
-        <div class="hero-center">
-            <div class="hero-title">✨ You ask. Picky finds.</div>
-            <div class="hero-copy">Just point, search, and pick your book!</div>
-        </div>
-
-        <div class="hero-badge">✓ Accurate · Fast · Reliable</div>
-    </div>
-    """,
+    """<div class="picky-header"><div class="brand-wrap"><div class="brand-icon">📚🔎</div><div><div class="brand-name">Picky</div><div class="brand-sub">Pick Your Book</div></div></div><div class="hero-center"><div class="hero-title">✨ You ask. Picky finds.</div><div class="hero-copy">Just point, search, and pick your book!</div></div><div class="hero-badge">✓ Accurate · Fast · Reliable</div></div>""",
     unsafe_allow_html=True
 )
 
