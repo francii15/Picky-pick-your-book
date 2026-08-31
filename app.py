@@ -26,7 +26,7 @@ st.set_page_config(
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(APP_DIR, "bookshelf_efficientnetb0_v2.keras")
+MODEL_PATH = os.path.join(APP_DIR, "bookshelf_efficientnetb0_v2_deploy.keras")
 CLASS_NAMES_PATH = os.path.join(APP_DIR, "class_names.json")
 
 WORKSPACE = "francis-infant-s-workspace"
@@ -198,7 +198,7 @@ DISPLAY = {
 def load_classifier():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            "bookshelf_efficientnetb0_v2.keras is missing from the repository."
+            "bookshelf_efficientnetb0_v2_deploy.keras is missing from the repository."
         )
 
     return tf.keras.models.load_model(
