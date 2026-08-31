@@ -1935,8 +1935,15 @@ if st.session_state.result_image is None:
         unsafe_allow_html=True
     )
 else:
+    display_image = st.session_state.result_image
+
+    if isinstance(display_image, np.ndarray):
+        display_image = Image.fromarray(
+            display_image.astype(np.uint8)
+        )
+
     result_slot.image(
-        st.session_state.result_image,
+        display_image,
         use_container_width=True
     )
 
@@ -1993,34 +2000,20 @@ else:
         )
 
         status_slot.markdown(
-            f"""
-            <div class="result-card">
-                <div class="peek">👀 PEEK-A-BOOK!</div>
-                <div class="result-title">There you are, {title}! 📖</div>
-                {author_html}
-                <div class="result-copy">
-                    Picky spotted it hiding on the shelf.
-                </div>
-
-                <div class="metric-row">
-                    <div class="mini-metric">
-                        <span>Confidence</span>
-                        <b>{result['final_score']:.1f}%</b>
-                    </div>
-
-                    <div class="mini-metric">
-                        <span>Search time</span>
-                        <b>{runtime_html}</b>
-                    </div>
-                </div>
-
-                {interpretation}
-
-                <div class="pick-banner">
-                    🎉 NOW... PICK YOUR BOOK! 📚
-                </div>
-            </div>
-            """,
+            (
+                f'<div class="result-card">'
+                f'<div class="peek">👀 PEEK-A-BOOK!</div>'
+                f'<div class="result-title">There you are, {title}! 📖</div>'
+                f'{author_html}'
+                f'<div class="result-copy">Picky spotted it hiding on the shelf.</div>'
+                f'<div class="metric-row">'
+                f'<div class="mini-metric"><span>Confidence</span><b>{result["final_score"]:.1f}%</b></div>'
+                f'<div class="mini-metric"><span>Search time</span><b>{runtime_html}</b></div>'
+                f'</div>'
+                f'{interpretation}'
+                f'<div class="pick-banner">🎉 NOW... PICK YOUR BOOK! 📚</div>'
+                f'</div>'
+            ),
             unsafe_allow_html=True
         )
 
@@ -2032,18 +2025,13 @@ else:
         ][0]
 
         status_slot.markdown(
-            f"""
-            <div class="warning-card">
-                <div class="peek">🙈 No Peek-a-Book this time!</div>
-                <div class="result-title">
-                    Picky couldn't confidently spot {title}.
-                </div>
-                <div class="result-copy">
-                    Try a clearer shelf photo, move slightly closer,
-                    or make sure the spine is visible.
-                </div>
-            </div>
-            """,
+            (
+                f'<div class="warning-card">'
+                f'<div class="peek">🙈 No Peek-a-Book this time!</div>'
+                f'<div class="result-title">Picky couldn\'t confidently spot {title}.</div>'
+                f'<div class="result-copy">Try a clearer shelf photo, move slightly closer, or make sure the spine is visible.</div>'
+                f'</div>'
+            ),
             unsafe_allow_html=True
         )
 
