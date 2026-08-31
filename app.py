@@ -1262,6 +1262,33 @@ st.markdown(
         background: rgba(255,255,255,.0);
     }
 
+    /* --------------------------------------------------------
+       Keep native Streamlit result text readable on the light UI.
+       Streamlit may inherit a dark-theme text color (white) even
+       while our app background is light.
+       -------------------------------------------------------- */
+    div[data-testid="stMarkdownContainer"],
+    div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stMarkdownContainer"] strong,
+    div[data-testid="stMarkdownContainer"] h1,
+    div[data-testid="stMarkdownContainer"] h2,
+    div[data-testid="stMarkdownContainer"] h3,
+    div[data-testid="stMarkdownContainer"] li {
+        color: #1C2821 !important;
+    }
+
+    div[data-testid="stAlert"],
+    div[data-testid="stAlert"] p,
+    div[data-testid="stAlert"] strong,
+    div[data-testid="stAlert"] div {
+        color: #1C2821 !important;
+    }
+
+    div[data-testid="stCaptionContainer"],
+    div[data-testid="stCaptionContainer"] p {
+        color: #657069 !important;
+    }
+
     .picky-header {
         display:grid;
         grid-template-columns:1fr auto 1fr;
