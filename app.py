@@ -1736,6 +1736,7 @@ source_file = camera if camera is not None else upload
 if search_clicked:
     st.session_state.last_query = query
     st.session_state.result_image = None
+    st.session_state.result_html = None
     st.session_state.runtime_seconds = None
 
     if source_file is None:
@@ -1780,77 +1781,52 @@ if search_clicked:
                     cv2.COLOR_BGR2RGB
                 )
 
-                # Keep progress inside the result column.
-                with right:
-                    with st.status(
-                        "Picky is scanning your shelf…",
-                        expanded=True
-                    ) as status:
-                        st.write(
-                            "Looking for book-shaped regions…"
+                # Process without temporary layout placeholders.
+                predictions = run_detector(image_rgb)
+
+                detections = prepare_detections(
+                    image_rgb,
+                    predictions
+                )
+
+                if not detections:
+                    st.session_state.result_image = image_rgb
+                    st.session_state.result_html = (
+                        "NOT_FOUND",
+                        requested_book,
+                        query
+                    )
+                else:
+                    analyzed = analyze_detections(
+                        image_rgb,
+                        detections
+                    )
+
+                    result = locate_phone_book(
+                        analyzed,
+                        requested_book
+                    )
+
+                    if result is None:
+                        st.session_state.result_image = image_rgb
+                        st.session_state.result_html = (
+                            "NOT_FOUND",
+                            requested_book,
+                            query
                         )
-
-                        predictions = run_detector(image_rgb)
-
-                        detections = prepare_detections(
+                    else:
+                        output = draw_result(
                             image_rgb,
-                            predictions
+                            result,
+                            requested_book
                         )
 
-                        if not detections:
-                            st.session_state.result_image = image_rgb
-                            st.session_state.result_html = (
-                                "NOT_FOUND",
-                                requested_book,
-                                query
-                            )
-
-                        else:
-                            st.write(
-                                "Reading the detected book spines…"
-                            )
-
-                            analyzed = analyze_detections(
-                                image_rgb,
-                                detections
-                            )
-
-                            st.write(
-                                "Matching the shelf against your request…"
-                            )
-
-                            result = locate_phone_book(
-                                analyzed,
-                                requested_book
-                            )
-
-                            if result is None:
-                                st.session_state.result_image = image_rgb
-                                st.session_state.result_html = (
-                                    "NOT_FOUND",
-                                    requested_book,
-                                    query
-                                )
-
-                            else:
-                                output = draw_result(
-                                    image_rgb,
-                                    result,
-                                    requested_book
-                                )
-
-                                st.session_state.result_image = output
-                                st.session_state.result_html = (
-                                    "FOUND",
-                                    requested_book,
-                                    query,
-                                    result
-                                )
-
-                        status.update(
-                            label="Picky finished searching.",
-                            state="complete",
-                            expanded=False
+                        st.session_state.result_image = output
+                        st.session_state.result_html = (
+                            "FOUND",
+                            requested_book,
+                            query,
+                            result
                         )
 
                 st.session_state.runtime_seconds = (
@@ -1867,163 +1843,94 @@ if search_clicked:
 
 # ============================================================
 # DISPLAY RESULT
+# Use native Streamlit elements here so CSS/HTML cannot hide
+# the image or the Picky result message.
 # ============================================================
 
-with right:
-    with st.container(border=True):
+right.markdown("## ◎ Picky's Result")
+right.caption("Here's what Picky found for you.")
 
-        st.markdown(
-            """<div class="result-head"><div class="target-dot">◎</div><div><div class="section-title">Picky's Result</div><div class="section-copy">Here's what Picky found for you.</div></div></div>""",
-            unsafe_allow_html=True
+if st.session_state.result_image is None:
+    right.info(
+        "📚 Your full shelf will appear here after Picky finishes searching."
+    )
+else:
+    display_image = st.session_state.result_image
+
+    if isinstance(display_image, np.ndarray):
+        display_image = np.clip(
+            display_image, 0, 255
+        ).astype(np.uint8)
+
+    right.image(
+        display_image,
+        caption="Picky's bookshelf result",
+        use_container_width=True
+    )
+
+if st.session_state.result_html is None:
+    right.info(
+        "Upload a bookshelf photo, enter a book title or author, "
+        "and click **Find My Book**."
+    )
+else:
+    state = st.session_state.result_html[0]
+
+    if state == "FOUND":
+        _, requested_book, original_query, result = (
+            st.session_state.result_html
         )
 
-        # ----------------------------------------------------
-        # IMAGE
-        # ----------------------------------------------------
+        title, author = DISPLAY[requested_book]
+        runtime = st.session_state.runtime_seconds
 
-        if st.session_state.result_image is None:
-            st.markdown(
-                """<div class="result-placeholder"><div class="big">📚</div><b>Your full shelf will appear here.</b><div style="margin-top:6px">Picky keeps a large result frame so books remain visible even when the photo is taken from farther away.</div></div>""",
-                unsafe_allow_html=True
-            )
-        else:
-            display_image = st.session_state.result_image
+        right.success(
+            f"👀 PEEK-A-BOOK!  There you are, **{title}**! 📖\n\n"
+            f"Picky spotted it hiding on the shelf."
+        )
 
-            if isinstance(display_image, np.ndarray):
-                display_image = Image.fromarray(
-                    np.clip(display_image, 0, 255).astype(np.uint8)
-                )
+        if author:
+            right.markdown(f"**Author:** {author}")
 
-            # Render directly instead of through st.empty().
-            st.image(
-                display_image,
-                use_container_width=True
-            )
+        right.markdown(
+            f"**Confidence:** {result['final_score']:.1f}%  \n"
+            f"**Search time:** {runtime:.1f} sec"
+            if runtime is not None
+            else f"**Confidence:** {result['final_score']:.1f}%"
+        )
 
-        # ----------------------------------------------------
-        # RESULT MESSAGE
-        # ----------------------------------------------------
-
-        if st.session_state.result_html is None:
-            st.markdown(
-                """<div class="result-card" style="background:#FBFCFB;border-color:#E4E9E6"><div class="peek" style="color:#566159">📚 Ready when you are.</div><div class="result-copy">Upload a bookshelf photo and tell Picky which book to find.</div></div>""",
-                unsafe_allow_html=True
+        if clean_user_query(original_query) != clean_user_query(title):
+            right.info(
+                f"✨ Picky understood **{original_query}** as **{title}**."
             )
 
-        else:
-            state = st.session_state.result_html[0]
+        right.success("🎉 **NOW... PICK YOUR BOOK! 📚**")
 
-            if state == "FOUND":
-                _, requested_book, original_query, result = (
-                    st.session_state.result_html
-                )
+    elif state == "NOT_FOUND":
+        _, requested_book, original_query = (
+            st.session_state.result_html
+        )
 
-                title, author = DISPLAY[requested_book]
+        title = DISPLAY[requested_book][0]
 
-                author_html = (
-                    f"<div class='author'>{author}</div>"
-                    if author
-                    else ""
-                )
+        right.warning(
+            f"🙈 **No Peek-a-Book this time!**\n\n"
+            f"Picky searched the shelf but couldn't confidently spot "
+            f"**{title}**.\n\n"
+            f"Try a clearer shelf photo, move slightly closer, "
+            f"or make sure the spine is visible."
+        )
 
-                interpretation = ""
+    elif state == "MESSAGE":
+        _, heading, message = st.session_state.result_html
+        right.warning(f"**{heading}**\n\n{message}")
 
-                if clean_user_query(
-                    original_query
-                ) != clean_user_query(
-                    title
-                ):
-                    interpretation = (
-                        "<div class='note'>"
-                        f"✨ Picky understood <b>{original_query}</b> "
-                        f"as <b>{title}</b>."
-                        "</div>"
-                    )
-
-                runtime = st.session_state.runtime_seconds
-
-                runtime_html = (
-                    f"{runtime:.1f} sec"
-                    if runtime is not None
-                    else "—"
-                )
-
-                result_html = (
-                    f'<div class="result-card">'
-                    f'<div class="peek">👀 PEEK-A-BOOK!</div>'
-                    f'<div class="result-title">There you are, {title}! 📖</div>'
-                    f'{author_html}'
-                    f'<div class="result-copy">Picky spotted it hiding on the shelf.</div>'
-                    f'<div class="metric-row">'
-                    f'<div class="mini-metric"><span>Confidence</span><b>{result["final_score"]:.1f}%</b></div>'
-                    f'<div class="mini-metric"><span>Search time</span><b>{runtime_html}</b></div>'
-                    f'</div>'
-                    f'{interpretation}'
-                    f'<div class="pick-banner">🎉 NOW... PICK YOUR BOOK! 📚</div>'
-                    f'</div>'
-                )
-
-                st.markdown(
-                    result_html,
-                    unsafe_allow_html=True
-                )
-
-            elif state == "NOT_FOUND":
-                _, requested_book, original_query = (
-                    st.session_state.result_html
-                )
-
-                title = DISPLAY[requested_book][0]
-
-                not_found_html = (
-                    f'<div class="warning-card">'
-                    f'<div class="peek">🙈 No Peek-a-Book this time!</div>'
-                    f'<div class="result-title">Picky couldn\'t confidently spot {title}.</div>'
-                    f'<div class="result-copy">Try a clearer shelf photo, move slightly closer, or make sure the spine is visible.</div>'
-                    f'</div>'
-                )
-
-                st.markdown(
-                    not_found_html,
-                    unsafe_allow_html=True
-                )
-
-            elif state == "MESSAGE":
-                _, heading, message = st.session_state.result_html
-
-                message_html = (
-                    f'<div class="warning-card">'
-                    f'<div class="peek">{heading}</div>'
-                    f'<div class="result-copy">{message}</div>'
-                    f'</div>'
-                )
-
-                st.markdown(
-                    message_html,
-                    unsafe_allow_html=True
-                )
-
-            elif state == "ERROR":
-                _, message = st.session_state.result_html
-
-                safe = (
-                    str(message)
-                    .replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;")
-                )
-
-                error_html = (
-                    f'<div class="warning-card">'
-                    f'<div class="peek">⚠️ Picky ran into a problem.</div>'
-                    f'<div class="result-copy">{safe}</div>'
-                    f'</div>'
-                )
-
-                st.markdown(
-                    error_html,
-                    unsafe_allow_html=True
-                )
+    elif state == "ERROR":
+        _, message = st.session_state.result_html
+        right.error(
+            "⚠️ Picky ran into a problem while searching.\n\n"
+            f"{message}"
+        )
 
 
 st.markdown(
