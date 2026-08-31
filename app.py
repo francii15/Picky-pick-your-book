@@ -8,6 +8,7 @@ import requests
 import cv2
 import numpy as np
 import tensorflow as tf
+from tensorflow.keras.applications.efficientnet import preprocess_input
 import easyocr
 import streamlit as st
 from rapidfuzz import fuzz, process
@@ -202,7 +203,11 @@ def load_classifier():
 
     return tf.keras.models.load_model(
         MODEL_PATH,
-        compile=False
+        compile=False,
+        safe_mode=False,
+        custom_objects={
+            "preprocess_input": preprocess_input
+        }
     )
 
 
