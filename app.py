@@ -1259,7 +1259,23 @@ st.markdown(
     }
 
     header[data-testid="stHeader"] {
-        background: rgba(255,255,255,.0);
+        background: #FFFFFF !important;
+        color: #1C2821 !important;
+    }
+
+    header[data-testid="stHeader"] button,
+    header[data-testid="stHeader"] svg,
+    header[data-testid="stHeader"] span,
+    header[data-testid="stHeader"] p {
+        color: #1C2821 !important;
+        fill: #1C2821 !important;
+    }
+
+    div[data-testid="stToolbar"] button,
+    div[data-testid="stToolbar"] svg,
+    div[data-testid="stToolbar"] span {
+        color: #1C2821 !important;
+        fill: #1C2821 !important;
     }
 
     /* --------------------------------------------------------
