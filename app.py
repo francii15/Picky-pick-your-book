@@ -190,6 +190,21 @@ DISPLAY = {
 }
 
 
+# Search suggestions used by the type-ahead search box.
+# Titles and authors are both searchable. Users may still enter
+# their own text because accept_new_options=True.
+SEARCH_OPTIONS = []
+
+for _, (book_title, author_name) in DISPLAY.items():
+    SEARCH_OPTIONS.append(book_title)
+
+    if author_name:
+        SEARCH_OPTIONS.append(author_name)
+
+# Remove duplicates while keeping the original order.
+SEARCH_OPTIONS = list(dict.fromkeys(SEARCH_OPTIONS))
+
+
 # ============================================================
 # CACHE HEAVY RESOURCES
 # ============================================================
@@ -1283,17 +1298,53 @@ st.markdown(
 
     div[data-testid="stToolbar"] {
         background: transparent !important;
+        opacity: 1 !important;
     }
 
+    /* Make every toolbar control between Share and Deploy visible */
     div[data-testid="stToolbar"] button,
     div[data-testid="stToolbar"] a,
-    div[data-testid="stToolbar"] span {
+    div[data-testid="stToolbar"] span,
+    div[data-testid="stToolbar"] div {
         color: #1C2821 !important;
+        opacity: 1 !important;
     }
 
-    div[data-testid="stToolbar"] svg {
-        fill: #1C2821 !important;
+    div[data-testid="stToolbar"] button {
+        background: transparent !important;
+        border-color: transparent !important;
+    }
+
+    div[data-testid="stToolbar"] button:hover {
+        background: #F1F5F2 !important;
+    }
+
+    /* Streamlit toolbar icons use a mix of fill and stroke */
+    div[data-testid="stToolbar"] svg,
+    div[data-testid="stToolbar"] svg *,
+    header[data-testid="stHeader"] svg,
+    header[data-testid="stHeader"] svg * {
         color: #1C2821 !important;
+        fill: #1C2821 !important;
+        stroke: #1C2821 !important;
+        opacity: 1 !important;
+    }
+
+    /* Some Streamlit versions render toolbar actions in these containers */
+    div[data-testid="stToolbarActions"],
+    div[data-testid="stToolbarActions"] *,
+    div[data-testid="stHeaderActionElements"],
+    div[data-testid="stHeaderActionElements"] * {
+        color: #1C2821 !important;
+        fill: #1C2821 !important;
+        stroke: #1C2821 !important;
+        opacity: 1 !important;
+    }
+
+    /* Keep disabled icons distinguishable, but still visible */
+    div[data-testid="stToolbar"] button:disabled,
+    div[data-testid="stToolbar"] button:disabled * {
+        opacity: 0.45 !important;
     }
 
     .picky-header {
@@ -1628,6 +1679,39 @@ st.markdown(
         opacity:1 !important;
     }
 
+    /* Searchable book/author suggestion field */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        background:#262730 !important;
+        border-color:#3A3F4B !important;
+        color:#FFFFFF !important;
+        border-radius:12px !important;
+        min-height:3.2rem !important;
+    }
+
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] span,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] input,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] svg {
+        color:#FFFFFF !important;
+        fill:#FFFFFF !important;
+    }
+
+    /* Dropdown suggestion list */
+    div[role="listbox"] {
+        background:#FFFFFF !important;
+        border:1px solid #E1E7E3 !important;
+    }
+
+    div[role="option"] {
+        color:#1C2821 !important;
+        background:#FFFFFF !important;
+    }
+
+    div[role="option"]:hover,
+    div[role="option"][aria-selected="true"] {
+        background:#EAF5EE !important;
+        color:#07522F !important;
+    }
+
     /* File uploader browse button */
     div[data-testid="stFileUploader"] button,
     div[data-testid="stFileUploader"] button * {
@@ -1773,12 +1857,21 @@ with left:
             unsafe_allow_html=True
         )
 
-        query = st.text_input(
+        # Searchable type-ahead input.
+        # As the user types a title or author, Streamlit filters
+        # the available suggestions automatically.
+        query = st.selectbox(
             "Book query",
-            value=st.session_state.last_query,
-            placeholder="e.g. idiot, golden gat, lateral, Tolstoy…",
-            label_visibility="collapsed"
+            options=SEARCH_OPTIONS,
+            index=None,
+            placeholder="Start typing a book title or author…",
+            accept_new_options=True,
+            label_visibility="collapsed",
+            key="book_query"
         )
+
+        # selectbox returns None until the user chooses or enters a value.
+        query = query or ""
 
         search_clicked = st.button(
             "🔎 Find My Book",
@@ -1786,54 +1879,20 @@ with left:
             use_container_width=True
         )
 
-        st.markdown(
-            "<b style='font-size:13px'>Try these:</b>",
-            unsafe_allow_html=True
-        )
+        if query.strip():
+            matched_book, matched_score = resolve_book_query(query)
 
-        q1, q2, q3 = st.columns(3)
+            if matched_book is not None:
+                matched_title, matched_author = DISPLAY[matched_book]
 
-        with q1:
-            if st.button(
-                "idiot",
-                use_container_width=True
-            ):
-                st.session_state.last_query = "idiot"
-                st.rerun()
+                suggestion_text = matched_title
 
-        with q2:
-            if st.button(
-                "my journey",
-                use_container_width=True
-            ):
-                st.session_state.last_query = "my journey"
-                st.rerun()
+                if matched_author:
+                    suggestion_text += f" — {matched_author}"
 
-        with q3:
-            if st.button(
-                "golden gate",
-                use_container_width=True
-            ):
-                st.session_state.last_query = "golden gate"
-                st.rerun()
-
-        q4, q5 = st.columns(2)
-
-        with q4:
-            if st.button(
-                "lateral",
-                use_container_width=True
-            ):
-                st.session_state.last_query = "lateral"
-                st.rerun()
-
-        with q5:
-            if st.button(
-                "Tolstoy",
-                use_container_width=True
-            ):
-                st.session_state.last_query = "Tolstoy"
-                st.rerun()
+                st.caption(
+                    f"Suggested match: {suggestion_text}"
+                )
 
         st.markdown(
             """
