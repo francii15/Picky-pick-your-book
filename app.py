@@ -1274,47 +1274,55 @@ st.markdown(
     }
 
     /* --------------------------------------------------------
-       STREAMLIT TOP BAR — clean, stable styling
+       STREAMLIT TOP BAR — final stable styling
        -------------------------------------------------------- */
     header[data-testid="stHeader"] {
-        background: #FFFFFF !important;
-        border-bottom: 1px solid #EEF1EF !important;
+        background: #0B3D2E !important;
+        border-bottom: 1px solid #0B3D2E !important;
         height: 3.1rem !important;
     }
 
-    /* Keep toolbar labels readable */
-    header[data-testid="stHeader"] button,
-    header[data-testid="stHeader"] a,
-    div[data-testid="stToolbar"] button,
-    div[data-testid="stToolbar"] a {
-        color: #1C2821 !important;
+    /* Keep the whole toolbar fully visible */
+    header[data-testid="stHeader"] *,
+    div[data-testid="stToolbar"] *,
+    div[data-testid="stToolbarActions"] *,
+    div[data-testid="stHeaderActionElements"] * {
         opacity: 1 !important;
     }
 
-    /* Preserve the original SVG geometry.
-       A filter darkens light Streamlit icons without filling
-       transparent SVG areas or creating black squares. */
+    /* Share / Deploy / menu text */
+    header[data-testid="stHeader"] button,
+    header[data-testid="stHeader"] a,
+    div[data-testid="stToolbar"] button,
+    div[data-testid="stToolbar"] a,
+    div[data-testid="stToolbar"] span {
+        color: #FFFFFF !important;
+    }
+
+    /* Force toolbar icons to white without changing SVG geometry */
     header[data-testid="stHeader"] svg,
     div[data-testid="stToolbar"] svg,
     div[data-testid="stToolbarActions"] svg,
     div[data-testid="stHeaderActionElements"] svg {
-        filter: brightness(0) saturate(100%) !important;
+        filter: brightness(0) invert(1) !important;
         opacity: 1 !important;
     }
 
-    /* Subtle hover only — no custom icon fill/stroke overrides */
-    div[data-testid="stToolbar"] button:hover,
-    header[data-testid="stHeader"] button:hover {
-        background: #F1F5F2 !important;
+    /* Preserve icon geometry: do not force fill/stroke */
+    header[data-testid="stHeader"] svg *,
+    div[data-testid="stToolbar"] svg *,
+    div[data-testid="stToolbarActions"] svg *,
+    div[data-testid="stHeaderActionElements"] svg * {
+        opacity: 1 !important;
     }
 
-    /* Disabled controls should remain visible but subdued */
-    div[data-testid="stToolbar"] button:disabled,
-    header[data-testid="stHeader"] button:disabled {
-        opacity: 0.4 !important;
+    /* Subtle hover */
+    header[data-testid="stHeader"] button:hover,
+    div[data-testid="stToolbar"] button:hover {
+        background: rgba(255,255,255,0.12) !important;
     }
 
-    /* Keep the app header below Streamlit's fixed top bar */
+    /* Keep Picky safely below Streamlit's fixed header */
     .picky-header {
         position: relative;
         z-index: 1;
