@@ -1,126 +1,3 @@
-it is not able find the book idiot even though it is available on the shelf
-
-You’re right—the image is clear enough. I can visibly read books such as War and Peace, Spirit Hacking, A Leader in the Making, and Secrets of Mind Power. The problem is inside Picky, not your photo.
-
-Most likely, one of these stages is failing:
-
-RF-DETR is missing the book because several books are horizontal or tilted.
-EasyOCR is receiving an incorrect crop or failing to read the rotated title.
-The title is recognised, but the fuzzy-matching threshold is too strict.
-
-Streamlit is only displaying the result; it is not causing the recognition failure.
-
-To identify the exact stage, send me:
-
-The exact book title you searched for.
-The message Picky displayed.
-The terminal output produced after clicking Find Book.
-Your current app.py and the backend file containing functions such as run_detector, analyze_detections, or locate_phone_book.
-
-Then I can locate the exact failing line and give you the corrected code.
-
-Pasted text(6).txt
-Document
-
-I found the problem. The query is working correctly: “Fyodor Dostoevsky” is successfully resolved to The Idiot. The failure happens in the vision pipeline.
-
-The Idiot is the narrow, dark upright book beside Spirit Hacking. Your current settings make it easy to reject:
-
-RF-DETR confidence is high at 0.50.
-The detected crop has no extra padding.
-The small spine text is not enlarged before OCR.
-OCR must score at least 60.
-The classifier must reach 85%, or 75% with a large margin.
-Any unexpected Roboflow response is silently converted into zero detections.
-
-So the message asking for a clearer photo is misleading—the software is rejecting the result.
-
-Start by changing:
-
-RF_CONFIDENCE_THRESHOLD = 0.25
-CLASSIFIER_STRONG_THRESHOLD = 0.70
-CLASSIFIER_DYNAMIC_THRESHOLD = 0.60
-MIN_MARGIN = 0.10
-
-Inside run_ocr_on_crop(), enlarge the crop before applying rotations:
-
-height, width = crop.shape[:2]
-
-scale = max(2.0, 700 / max(height, width))
-
-crop = cv2.resize(
-    crop,
-    None,
-    fx=scale,
-    fy=scale,
-    interpolation=cv2.INTER_CUBIC
-)
-
-Also replace the silent detector failure:
-
-except Exception:
-    return []
-
-with:
-
-except Exception as exc:
-    print("Roboflow response:", result)
-    raise RuntimeError(
-        "Picky could not understand the detector response."
-    ) from exc
-
-Roboflow’s current recommended workflow integration uses InferenceHTTPClient.run_workflow(), which is safer than manually assuming a fixed nested JSON structure. Roboflow Workflows reference
-
-These changes should be made first. If it still misses The Idiot, the next step is adding crop padding and contrast enhancement for dark book spines.
-
-Updated the complete application without changing any unrelated code. The file passes Python syntax validation.
-
-Download app.py
-
-Replace the existing app.py in your GitHub repository with this file, commit the change, and wait for Streamlit to redeploy. Then test The Idiot again.
-
-app.py
-Code
-its detecting the wrong book with 100% confidence
-
-Fixed. The previous version trusted the classifier alone, causing the incorrect 100% match.
-
-The revised version now:
-
-Requires OCR evidence before accepting classifier predictions.
-Restores stricter classifier thresholds.
-Combines OCR and classifier scores.
-Caps the displayed match score at 99%.
-Validates and logs the class mapping.
-Keeps the improved detection and OCR resizing.
-
-Download the corrected app.py
-
-Replace your GitHub repository’s existing app.py, commit the change, and test Lateral Thinking and The Idiot again. If it still selects the wrong book, send me class_names.json because the class order may be incorrect.
-
-app.py
-Code
-same problem 
-
-The previous fix was incomplete because it compared OCR only with the requested title. This version compares every detected crop against all known books.
-
-It now:
-
-Rejects Baedeker India when it matches Baedeker more strongly.
-Requires a clear OCR advantage for the requested book.
-Prevents EfficientNet from selecting a book by itself.
-Rejects ambiguous matches.
-Keeps the improved detection and OCR processing.
-
-Download the revised app.py
-
-Replace the repository file using the exact name app.py, commit it, and wait for Streamlit to redeploy. If the same result remains afterward, send the latest Manage app → Logs output so we can verify that Streamlit deployed this version.
-
-app.py
-Code
-
-even though the book is available it is not able to detect lets use the first app.py which was used
-
 import os
 import re
 import json
@@ -137,7 +14,9 @@ import streamlit as st
 from rapidfuzz import fuzz, process
 
 ============================================================
+
 PAGE CONFIG
+
 ============================================================
 
 st.set_page_config(
@@ -165,7 +44,9 @@ CLASSIFIER_DYNAMIC_THRESHOLD = 0.75
 MIN_MARGIN = 0.20
 
 ============================================================
+
 SECRET
+
 ============================================================
 
 def get_roboflow_key():
@@ -176,8 +57,11 @@ except Exception:
 pass
 
 return os.getenv("ROBOFLOW_API_KEY")
+
 ============================================================
+
 BOOK DATA
+
 ============================================================
 
 BOOK_METADATA = {
@@ -309,7 +193,9 @@ DISPLAY = {
 }
 
 Search suggestions used by the type-ahead search box.
+
 Titles and authors are both searchable. Users may still enter
+
 their own text because accept_new_options=True.
 
 SEARCH_OPTIONS = []
@@ -319,12 +205,15 @@ SEARCH_OPTIONS.append(book_title)
 
 if author_name:
     SEARCH_OPTIONS.append(author_name)
+
 Remove duplicates while keeping the original order.
 
 SEARCH_OPTIONS = list(dict.fromkeys(SEARCH_OPTIONS))
 
 ============================================================
+
 CACHE HEAVY RESOURCES
+
 ============================================================
 
 @st.cache_resource(show_spinner="Loading Picky's vision model…")
@@ -370,7 +259,9 @@ else:
 class_names = DEFAULT_CLASS_NAMES
 
 ============================================================
+
 TEXT / OCR HELPERS
+
 ============================================================
 
 def normalize_text(text):
@@ -507,8 +398,11 @@ return {
     "matched_words": matched_words,
     "author_score": author_score
 }
+
 ============================================================
+
 QUERY RESOLVER
+
 ============================================================
 
 def clean_user_query(text):
@@ -591,8 +485,11 @@ if score >= 65:
     return alias_to_book[matched_alias], score
 
 return None, score
+
 ============================================================
+
 OCR
+
 ============================================================
 
 def run_ocr_on_crop(crop):
@@ -682,8 +579,11 @@ return {
     "keyword": best_keyword,
     "matched": False
 }
+
 ============================================================
+
 CLASSIFIER
+
 ============================================================
 
 def preprocess_classifier_crop(crop):
@@ -743,8 +643,11 @@ return {
     "confidence": confidence,
     "top3": top3
 }
+
 ============================================================
+
 NMS
+
 ============================================================
 
 def calculate_iou(box1, box2):
@@ -822,8 +725,11 @@ while detections:
     detections = remaining
 
 return selected
+
 ============================================================
+
 DETECTOR
+
 ============================================================
 
 def run_detector(image_rgb):
@@ -985,8 +891,11 @@ for item in detections:
     })
 
 return analyzed
+
 ============================================================
+
 FINAL LOCATOR
+
 ============================================================
 
 def get_classifier_margin(
@@ -1208,8 +1117,11 @@ return max(
         "final_score"
     ]
 )
+
 ============================================================
+
 DRAW RESULT
+
 ============================================================
 
 def draw_result(
@@ -1329,14 +1241,17 @@ cv2.putText(
 )
 
 return output
+
 ============================================================
+
 UI CSS
+
 ============================================================
 
 st.markdown(
 """
 <style>
-{
+ {
 --green-950:#063D26;
 --green-900:#07522F;
 --green-700:#0F7A49;
@@ -1833,7 +1748,9 @@ unsafe_allow_html=True
 )
 
 ============================================================
+
 HEADER
+
 ============================================================
 
 st.markdown(
@@ -1842,7 +1759,9 @@ unsafe_allow_html=True
 )
 
 ============================================================
+
 SESSION STATE
+
 ============================================================
 
 if "result_image" not in st.session_state:
@@ -1858,7 +1777,9 @@ if "runtime_seconds" not in st.session_state:
 st.session_state.runtime_seconds = None
 
 ============================================================
+
 LAYOUT
+
 ============================================================
 
 left, right = st.columns(
@@ -1964,8 +1885,11 @@ unsafe_allow_html=True
         """,
         unsafe_allow_html=True
     )
+
 ============================================================
+
 PROCESS SEARCH
+
 ============================================================
 
 source_file = camera if camera is not None else upload
@@ -2076,10 +2000,15 @@ else:
                 "ERROR",
                 str(exc)
             )
+
 ============================================================
+
 DISPLAY RESULT
+
 Use native Streamlit elements here so CSS/HTML cannot hide
+
 the image or the Picky result message.
+
 ============================================================
 
 right.markdown("## ◎ Picky's Result")
@@ -2177,5 +2106,3 @@ st.markdown(
 """,
 unsafe_allow_html=True
 )
-
-Close
