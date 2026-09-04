@@ -35,14 +35,12 @@ WORKFLOW_ID = (
     "yh1bv-3-rfdetr-small-t1-logic"
 )
 
-RF_CONFIDENCE_THRESHOLD = 0.25
+RF_CONFIDENCE_THRESHOLD = 0.50
 NMS_IOU_THRESHOLD = 0.65
-OCR_ACCEPT_THRESHOLD = 78.0
-OCR_WEAK_SUPPORT_THRESHOLD = 55.0
-OCR_CONFLICT_THRESHOLD = 72.0
-OCR_LEAD_MARGIN = 8.0
-CLASSIFIER_CONFIRM_THRESHOLD = 0.90
-CLASSIFIER_CONFIRM_MARGIN = 0.25
+OCR_THRESHOLD_PHONE = 60
+CLASSIFIER_STRONG_THRESHOLD = 0.85
+CLASSIFIER_DYNAMIC_THRESHOLD = 0.75
+MIN_MARGIN = 0.20
 
 
 # ============================================================
@@ -253,24 +251,6 @@ if os.path.exists(CLASS_NAMES_PATH):
         ]
 else:
     class_names = DEFAULT_CLASS_NAMES
-
-expected_class_count = int(model.output_shape[-1])
-
-if len(class_names) != expected_class_count:
-    raise RuntimeError(
-        "The model output and class_names.json have different class counts."
-    )
-
-if class_names != DEFAULT_CLASS_NAMES:
-    raise RuntimeError(
-        "class_names.json is not in the class order expected by the "
-        "deployed bookshelf model."
-    )
-
-print(
-    "Picky class mapping:",
-    list(enumerate(class_names))
-)
 
 
 # ============================================================
@@ -511,39 +491,11 @@ def resolve_book_query(user_query):
 # ============================================================
 
 def run_ocr_on_crop(crop):
-    height, width = crop.shape[:2]
-    longest_side = max(height, width)
-
-    scale = max(
-        1.5,
-        min(
-            4.0,
-            900 / max(longest_side, 1)
-        )
-    )
-
-    enlarged = cv2.resize(
-        crop,
-        None,
-        fx=scale,
-        fy=scale,
-        interpolation=cv2.INTER_CUBIC
-    )
-
     rotations = {
-        "0": enlarged,
-        "90": cv2.rotate(
-            enlarged,
-            cv2.ROTATE_90_CLOCKWISE
-        ),
-        "180": cv2.rotate(
-            enlarged,
-            cv2.ROTATE_180
-        ),
-        "270": cv2.rotate(
-            enlarged,
-            cv2.ROTATE_90_COUNTERCLOCKWISE
-        )
+        "0": crop,
+        "90": cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE),
+        "180": cv2.rotate(crop, cv2.ROTATE_180),
+        "270": cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
     }
 
     rotation_results = []
@@ -552,14 +504,7 @@ def run_ocr_on_crop(crop):
         results = reader.readtext(
             rotated_crop,
             detail=1,
-            paragraph=False,
-            min_size=5,
-            text_threshold=0.40,
-            low_text=0.25,
-            link_threshold=0.30,
-            contrast_ths=0.05,
-            adjust_contrast=0.70,
-            mag_ratio=1.20
+            paragraph=False
         )
 
         detected_text = []
@@ -595,166 +540,43 @@ def keyword_ocr_rescue(
     requested_book
 ):
     text = normalize_text(ocr_text)
-    text_words = [
-        word for word in text.split()
-        if word not in STOP_WORDS
-    ]
-
     keywords = UNIQUE_BOOK_KEYWORDS[
         requested_book
     ]
 
-    best_score = 0.0
+    best_score = 0
     best_keyword = None
-    best_matched = False
 
     for keyword in keywords:
         keyword = normalize_text(keyword)
-        keyword_words = [
-            word for word in keyword.split()
-            if word not in STOP_WORDS
-        ]
 
-        if not keyword_words or not text_words:
-            continue
+        if keyword in text:
+            return {
+                "score": 100.0,
+                "keyword": keyword,
+                "matched": True
+            }
 
-        word_scores = []
-
-        for keyword_word in keyword_words:
-            best_word_score = max(
-                fuzz.ratio(
-                    keyword_word,
-                    ocr_word
-                )
-                for ocr_word in text_words
-            )
-
-            word_scores.append(
-                float(best_word_score)
-            )
-
-        exact_match = all(
-            keyword_word in text_words
-            for keyword_word in keyword_words
+        score = fuzz.partial_ratio(
+            text,
+            keyword
         )
 
-        minimum_word_score = min(word_scores)
-        average_word_score = float(
-            np.mean(word_scores)
-        )
-
-        if exact_match:
-            score = 100.0
-            matched = True
-        else:
-            score = (
-                0.70 * minimum_word_score
-                + 0.30 * average_word_score
-            )
-            matched = minimum_word_score >= 80
-
-        if (
-            score > best_score
-            or (
-                score == best_score
-                and matched
-                and not best_matched
-            )
-        ):
+        if score > best_score:
             best_score = score
             best_keyword = keyword
-            best_matched = matched
+
+    if best_score >= 80:
+        return {
+            "score": float(best_score),
+            "keyword": best_keyword,
+            "matched": True
+        }
 
     return {
         "score": float(best_score),
         "keyword": best_keyword,
-        "matched": bool(best_matched)
-    }
-
-
-def score_ocr_text_for_book(
-    ocr_text,
-    book_key
-):
-    metadata = BOOK_METADATA[book_key]
-
-    phrase_score, best_title = title_similarity(
-        ocr_text,
-        metadata["titles"]
-    )
-
-    coverage = 0.0
-
-    if best_title is not None:
-        coverage, _ = keyword_coverage(
-            ocr_text,
-            best_title
-        )
-
-    author_score = author_similarity(
-        ocr_text,
-        metadata["authors"]
-    )
-
-    keyword_info = keyword_ocr_rescue(
-        ocr_text,
-        book_key
-    )
-
-    title_score = 0.0
-
-    if coverage >= 50 and phrase_score >= 60:
-        title_score = (
-            0.65 * float(phrase_score)
-            + 0.35 * float(coverage)
-        )
-
-    accepted_author_score = (
-        float(author_score)
-        if author_score >= 82
-        else 0.0
-    )
-
-    accepted_keyword_score = (
-        float(keyword_info["score"])
-        if keyword_info["matched"]
-        else 0.0
-    )
-
-    final_score = max(
-        title_score,
-        accepted_author_score,
-        accepted_keyword_score
-    )
-
-    raw_title_support = 0.0
-
-    if coverage >= 25 and phrase_score >= 50:
-        raw_title_support = (
-            0.60 * float(phrase_score)
-            + 0.40 * float(coverage)
-        )
-
-    raw_author_support = (
-        float(author_score)
-        if author_score >= 60
-        else 0.0
-    )
-
-    raw_support = max(
-        raw_title_support,
-        raw_author_support,
-        float(keyword_info["score"])
-    )
-
-    return {
-        "score": float(final_score),
-        "raw_support": float(raw_support),
-        "phrase_score": float(phrase_score),
-        "coverage": float(coverage),
-        "author_score": float(author_score),
-        "keyword": keyword_info["keyword"],
-        "keyword_matched": keyword_info["matched"]
+        "matched": False
     }
 
 
@@ -806,7 +628,6 @@ def classify_crop(crop):
     )[-3:][::-1]
 
     top3 = []
-    scores_by_book = {}
 
     for index in top_indices:
         top3.append({
@@ -816,21 +637,10 @@ def classify_crop(crop):
             )
         })
 
-    for index, class_name in enumerate(class_names):
-        book_key = CLASS_TO_METADATA.get(
-            class_name
-        )
-
-        if book_key is not None:
-            scores_by_book[book_key] = float(
-                predictions[index]
-            )
-
     return {
         "predicted_class": predicted_class,
         "confidence": confidence,
-        "top3": top3,
-        "scores_by_book": scores_by_book
+        "top3": top3
     }
 
 
@@ -973,52 +783,15 @@ def run_detector(image_rgb):
     result = response.json()
 
     try:
-        outputs = result["outputs"]
-
-        if not isinstance(outputs, list) or not outputs:
-            raise TypeError(
-                "Roboflow returned no workflow outputs."
-            )
-
-        prediction_block = outputs[0][
+        return result[
+            "outputs"
+        ][0][
+            "predictions"
+        ][
             "predictions"
         ]
-
-        if isinstance(prediction_block, dict):
-            predictions = prediction_block.get(
-                "predictions",
-                []
-            )
-        elif isinstance(prediction_block, list):
-            predictions = prediction_block
-        else:
-            raise TypeError(
-                "Roboflow returned an unknown prediction format."
-            )
-
-        if not isinstance(predictions, list):
-            raise TypeError(
-                "Roboflow predictions are not a list."
-            )
-
-        print(
-            "Raw detector predictions:",
-            len(predictions)
-        )
-
-        return predictions
-
-    except Exception as exc:
-        print(
-            "Roboflow response keys:",
-            list(result.keys())
-            if isinstance(result, dict)
-            else type(result).__name__
-        )
-
-        raise RuntimeError(
-            "Picky received an unexpected response from the book detector."
-        ) from exc
+    except Exception:
+        return []
 
 
 def prepare_detections(
@@ -1047,54 +820,24 @@ def prepare_detections(
         bw = float(pred["width"])
         bh = float(pred["height"])
 
-        original_x1 = max(
+        x1 = max(
             0,
             int(x - bw / 2)
         )
 
-        original_y1 = max(
+        y1 = max(
             0,
             int(y - bh / 2)
         )
 
-        original_x2 = min(
+        x2 = min(
             w,
             int(x + bw / 2)
         )
 
-        original_y2 = min(
-            h,
-            int(y + bh / 2)
-        )
-
-        pad_x = max(
-            4,
-            int(bw * 0.12)
-        )
-
-        pad_y = max(
-            4,
-            int(bh * 0.08)
-        )
-
-        x1 = max(
-            0,
-            original_x1 - pad_x
-        )
-
-        y1 = max(
-            0,
-            original_y1 - pad_y
-        )
-
-        x2 = min(
-            w,
-            original_x2 + pad_x
-        )
-
         y2 = min(
             h,
-            original_y2 + pad_y
+            int(y + bh / 2)
         )
 
         if x2 <= x1 or y2 <= y1:
@@ -1104,12 +847,6 @@ def prepare_detections(
             "index": index,
             "confidence": confidence,
             "box": (
-                original_x1,
-                original_y1,
-                original_x2,
-                original_y2
-            ),
-            "crop_box": (
                 x1,
                 y1,
                 x2,
@@ -1130,10 +867,7 @@ def analyze_detections(
     analyzed = []
 
     for item in detections:
-        x1, y1, x2, y2 = item.get(
-            "crop_box",
-            item["box"]
-        )
+        x1, y1, x2, y2 = item["box"]
 
         crop = image_rgb[
             y1:y2,
@@ -1222,23 +956,15 @@ def locate_phone_book(
     candidates = []
 
     for det in phone_analyzed:
-        ocr_evidence = {
-            book_key: {
-                "score": 0.0,
-                "raw_support": 0.0,
-                "text": "",
-                "support_text": "",
-                "rotation": "",
-                "support_rotation": "",
-                "details": None
-            }
-            for book_key in BOOK_METADATA
-        }
+        best_ocr_score = 0.0
+        best_ocr_text = ""
+        best_rotation = ""
+        best_keyword = None
 
-        for rotation_result in det[
+        for rr in det[
             "ocr_rotation_results"
         ]:
-            text = rotation_result.get(
+            text = rr.get(
                 "text",
                 ""
             )
@@ -1246,80 +972,60 @@ def locate_phone_book(
             if not text:
                 continue
 
-            rotation = rotation_result.get(
-                "rotation",
-                ""
+            score_info = score_book_strict(
+                text,
+                BOOK_METADATA[
+                    requested_book
+                ]
             )
 
-            for book_key in BOOK_METADATA:
-                score_info = score_ocr_text_for_book(
-                    text,
-                    book_key
-                )
-
-                evidence = ocr_evidence[
-                    book_key
+            strict_score = float(
+                score_info[
+                    "final_score"
                 ]
+            )
 
-                if score_info["score"] > evidence["score"]:
-                    evidence["score"] = score_info[
+            keyword_info = keyword_ocr_rescue(
+                text,
+                requested_book
+            )
+
+            keyword_score = 0.0
+
+            if keyword_info[
+                "matched"
+            ]:
+                keyword_score = float(
+                    keyword_info[
                         "score"
                     ]
-                    evidence["text"] = text
-                    evidence["rotation"] = rotation
-                    evidence["details"] = score_info
+                )
+
+            current_score = max(
+                strict_score,
+                keyword_score
+            )
+
+            if current_score > best_ocr_score:
+                best_ocr_score = current_score
+                best_ocr_text = text
+                best_rotation = rr.get(
+                    "rotation",
+                    ""
+                )
 
                 if (
-                    score_info["raw_support"]
-                    > evidence["raw_support"]
-                ):
-                    evidence["raw_support"] = score_info[
-                        "raw_support"
+                    keyword_info[
+                        "matched"
                     ]
-                    evidence["support_text"] = text
-                    evidence["support_rotation"] = rotation
-
-        target_evidence = ocr_evidence[
-            requested_book
-        ]
-
-        other_book, other_evidence = max(
-            (
-                (book_key, evidence)
-                for book_key, evidence
-                in ocr_evidence.items()
-                if book_key != requested_book
-            ),
-            key=lambda item: item[1]["score"]
-        )
-
-        target_ocr_score = float(
-            target_evidence["score"]
-        )
-
-        target_ocr_support = float(
-            target_evidence["raw_support"]
-        )
-
-        other_ocr_score = float(
-            other_evidence["score"]
-        )
-
-        has_conflicting_book = (
-            other_ocr_score >= OCR_CONFLICT_THRESHOLD
-            and target_ocr_score
-            < other_ocr_score + OCR_LEAD_MARGIN
-        )
-
-        has_clear_ocr_match = (
-            target_ocr_score >= OCR_ACCEPT_THRESHOLD
-            and not has_conflicting_book
-            and (
-                other_ocr_score < OCR_CONFLICT_THRESHOLD
-                or target_ocr_score
-                >= other_ocr_score + OCR_LEAD_MARGIN
-            )
-        )
+                    and keyword_score
+                    >= strict_score
+                ):
+                    best_keyword = keyword_info[
+                        "keyword"
+                    ]
+                else:
+                    best_keyword = None
 
         classifier_result = det[
             "classifier_scores"
@@ -1329,128 +1035,75 @@ def locate_phone_book(
             "predicted_class"
         ]
 
+        classifier_conf = float(
+            classifier_result[
+                "confidence"
+            ]
+        )
+
         classifier_book = CLASS_TO_METADATA.get(
             classifier_class
         )
 
-        scores_by_book = classifier_result.get(
-            "scores_by_book",
-            {}
+        second_conf, margin = get_classifier_margin(
+            classifier_result
         )
-
-        target_classifier_conf = float(
-            scores_by_book.get(
-                requested_book,
-                0.0
-            )
-        )
-
-        other_classifier_conf = max(
-            (
-                float(score)
-                for book_key, score
-                in scores_by_book.items()
-                if book_key != requested_book
-            ),
-            default=0.0
-        )
-
-        target_classifier_margin = (
-            target_classifier_conf
-            - other_classifier_conf
-        )
-
-        has_hybrid_match = (
-            not has_clear_ocr_match
-            and not has_conflicting_book
-            and target_ocr_support
-            >= OCR_WEAK_SUPPORT_THRESHOLD
-            and target_classifier_conf
-            >= CLASSIFIER_CONFIRM_THRESHOLD
-            and target_classifier_margin
-            >= CLASSIFIER_CONFIRM_MARGIN
-        )
-
-        print({
-            "detection": det["index"],
-            "detector_confidence": round(
-                det["confidence"],
-                4
-            ),
-            "requested_book": requested_book,
-            "target_ocr_score": round(
-                target_ocr_score,
-                2
-            ),
-            "target_ocr_support": round(
-                target_ocr_support,
-                2
-            ),
-            "strongest_other_book": other_book,
-            "strongest_other_ocr_score": round(
-                other_ocr_score,
-                2
-            ),
-            "classifier_book": classifier_book,
-            "target_classifier_confidence": round(
-                target_classifier_conf,
-                4
-            ),
-            "target_classifier_margin": round(
-                target_classifier_margin,
-                4
-            ),
-            "conflict": has_conflicting_book
-        })
 
         accepted = False
         method = None
         final_score = 0.0
 
-        if has_clear_ocr_match:
+        if best_ocr_score >= OCR_THRESHOLD_PHONE:
             accepted = True
-            method = "OCR identity match"
-            final_score = min(
-                98.0,
-                0.90 * target_ocr_score
-                + 0.10 * det["confidence"] * 100
+
+            method = (
+                "OCR / keyword match"
+                if best_keyword
+                else "OCR"
             )
 
-        elif has_hybrid_match:
+            final_score = best_ocr_score
+
+        elif (
+            classifier_book == requested_book
+            and classifier_conf
+            >= CLASSIFIER_STRONG_THRESHOLD
+        ):
             accepted = True
-            method = "OCR-supported visual match"
-            final_score = min(
-                94.0,
-                0.45 * target_ocr_support
-                + 0.45 * target_classifier_conf * 100
-                + 0.10 * det["confidence"] * 100
+            method = "EfficientNet fallback"
+            final_score = (
+                classifier_conf
+                * 100
+            )
+
+        elif (
+            classifier_book == requested_book
+            and classifier_conf
+            >= CLASSIFIER_DYNAMIC_THRESHOLD
+            and margin is not None
+            and margin >= MIN_MARGIN
+        ):
+            accepted = True
+            method = (
+                "EfficientNet strong-margin fallback"
+            )
+
+            final_score = (
+                classifier_conf
+                * 100
             )
 
         if accepted:
-            target_details = target_evidence.get(
-                "details"
-            ) or {}
-
             candidates.append({
                 **det,
-                "ocr_score": target_ocr_score,
-                "ocr_support_score": target_ocr_support,
-                "ocr_text": (
-                    target_evidence["text"]
-                    or target_evidence["support_text"]
-                ),
-                "rotation": (
-                    target_evidence["rotation"]
-                    or target_evidence["support_rotation"]
-                ),
-                "keyword": target_details.get(
-                    "keyword"
-                ),
-                "strongest_other_book": other_book,
-                "strongest_other_ocr_score": other_ocr_score,
+                "ocr_score": best_ocr_score,
+                "ocr_text": best_ocr_text,
+                "rotation": best_rotation,
+                "keyword": best_keyword,
                 "classifier_book": classifier_book,
-                "classifier_confidence": target_classifier_conf,
-                "classifier_margin": target_classifier_margin,
+                "classifier_confidence": classifier_conf,
+                "second_confidence": second_conf,
+                "classifier_margin": margin,
                 "method": method,
                 "final_score": final_score
             })
@@ -2394,10 +2047,10 @@ else:
             right.markdown(f"**Author:** {author}")
 
         right.markdown(
-            f"**Match score:** {result['final_score']:.1f}%  \n"
+            f"**Confidence:** {result['final_score']:.1f}%  \n"
             f"**Search time:** {runtime:.1f} sec"
             if runtime is not None
-            else f"**Match score:** {result['final_score']:.1f}%"
+            else f"**Confidence:** {result['final_score']:.1f}%"
         )
 
         if clean_user_query(original_query) != clean_user_query(title):
