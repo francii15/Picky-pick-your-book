@@ -35,12 +35,12 @@ WORKFLOW_ID = (
     "yh1bv-3-rfdetr-small-t1-logic"
 )
 
-RF_CONFIDENCE_THRESHOLD = 0.50
+RF_CONFIDENCE_THRESHOLD = 0.25
 NMS_IOU_THRESHOLD = 0.65
 OCR_THRESHOLD_PHONE = 60
-CLASSIFIER_STRONG_THRESHOLD = 0.85
-CLASSIFIER_DYNAMIC_THRESHOLD = 0.75
-MIN_MARGIN = 0.20
+CLASSIFIER_STRONG_THRESHOLD = 0.70
+CLASSIFIER_DYNAMIC_THRESHOLD = 0.60
+MIN_MARGIN = 0.10
 
 
 # ============================================================
@@ -491,6 +491,21 @@ def resolve_book_query(user_query):
 # ============================================================
 
 def run_ocr_on_crop(crop):
+    height, width = crop.shape[:2]
+
+    scale = max(
+        2.0,
+        700 / max(height, width)
+    )
+
+    crop = cv2.resize(
+        crop,
+        None,
+        fx=scale,
+        fy=scale,
+        interpolation=cv2.INTER_CUBIC
+    )
+
     rotations = {
         "0": crop,
         "90": cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE),
@@ -783,15 +798,40 @@ def run_detector(image_rgb):
     result = response.json()
 
     try:
-        return result[
-            "outputs"
-        ][0][
-            "predictions"
-        ][
-            "predictions"
-        ]
-    except Exception:
-        return []
+        output = result["outputs"][0]
+        prediction_block = output["predictions"]
+
+        if isinstance(prediction_block, dict):
+            predictions = prediction_block.get(
+                "predictions",
+                []
+            )
+        elif isinstance(prediction_block, list):
+            predictions = prediction_block
+        else:
+            raise TypeError(
+                "Unknown prediction format"
+            )
+
+        print(
+            "Raw books detected:",
+            len(predictions)
+        )
+
+        return predictions
+
+    except Exception as exc:
+        print(
+            "Roboflow response:",
+            json.dumps(
+                result,
+                indent=2
+            )[:3000]
+        )
+
+        raise RuntimeError(
+            "Picky could not understand the detector response."
+        ) from exc
 
 
 def prepare_detections(
@@ -820,24 +860,27 @@ def prepare_detections(
         bw = float(pred["width"])
         bh = float(pred["height"])
 
+        pad_x = int(bw * 0.15)
+        pad_y = int(bh * 0.08)
+
         x1 = max(
             0,
-            int(x - bw / 2)
+            int(x - bw / 2) - pad_x
         )
 
         y1 = max(
             0,
-            int(y - bh / 2)
+            int(y - bh / 2) - pad_y
         )
 
         x2 = min(
             w,
-            int(x + bw / 2)
+            int(x + bw / 2) + pad_x
         )
 
         y2 = min(
             h,
-            int(y + bh / 2)
+            int(y + bh / 2) + pad_y
         )
 
         if x2 <= x1 or y2 <= y1:
