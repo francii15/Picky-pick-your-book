@@ -1254,28 +1254,51 @@ st.markdown(
 
     .block-container {
         max-width: 1580px;
-        padding-top: 1.2rem;
+        padding-top: 4.4rem;
         padding-bottom: 1rem;
     }
 
+    /* --------------------------------------------------------
+       STREAMLIT TOP BAR
+       Keep Streamlit's controls visible without overlapping
+       the Picky header.
+       -------------------------------------------------------- */
     header[data-testid="stHeader"] {
         background: #FFFFFF !important;
-        color: #1C2821 !important;
+        border-bottom: 1px solid #EEF1EF !important;
+        height: 3.25rem !important;
     }
 
     header[data-testid="stHeader"] button,
-    header[data-testid="stHeader"] svg,
+    header[data-testid="stHeader"] a,
     header[data-testid="stHeader"] span,
     header[data-testid="stHeader"] p {
         color: #1C2821 !important;
+    }
+
+    header[data-testid="stHeader"] svg {
         fill: #1C2821 !important;
+        color: #1C2821 !important;
+    }
+
+    div[data-testid="stToolbar"] {
+        background: transparent !important;
     }
 
     div[data-testid="stToolbar"] button,
-    div[data-testid="stToolbar"] svg,
+    div[data-testid="stToolbar"] a,
     div[data-testid="stToolbar"] span {
         color: #1C2821 !important;
+    }
+
+    div[data-testid="stToolbar"] svg {
         fill: #1C2821 !important;
+        color: #1C2821 !important;
+    }
+
+    .picky-header {
+        position: relative;
+        z-index: 1;
     }
 
     /* --------------------------------------------------------
@@ -1633,6 +1656,10 @@ st.markdown(
     }
 
     @media (max-width: 900px) {
+        .block-container {
+            padding-top: 4rem;
+        }
+
         .picky-header {
             grid-template-columns:1fr;
             text-align:center;
