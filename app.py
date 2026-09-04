@@ -38,9 +38,11 @@ WORKFLOW_ID = (
 RF_CONFIDENCE_THRESHOLD = 0.25
 NMS_IOU_THRESHOLD = 0.65
 OCR_THRESHOLD_PHONE = 60
-CLASSIFIER_STRONG_THRESHOLD = 0.70
-CLASSIFIER_DYNAMIC_THRESHOLD = 0.60
-MIN_MARGIN = 0.10
+CLASSIFIER_STRONG_THRESHOLD = 0.85
+CLASSIFIER_DYNAMIC_THRESHOLD = 0.75
+MIN_MARGIN = 0.20
+CLASSIFIER_OCR_SUPPORT_THRESHOLD = 55
+DYNAMIC_OCR_SUPPORT_THRESHOLD = 65
 
 
 # ============================================================
@@ -251,6 +253,24 @@ if os.path.exists(CLASS_NAMES_PATH):
         ]
 else:
     class_names = DEFAULT_CLASS_NAMES
+
+expected_class_count = int(model.output_shape[-1])
+
+if len(class_names) != expected_class_count:
+    raise RuntimeError(
+        "The classifier output and class_names.json contain different "
+        "numbers of classes."
+    )
+
+if set(class_names) != set(DEFAULT_CLASS_NAMES):
+    raise RuntimeError(
+        "class_names.json does not contain the expected Picky book classes."
+    )
+
+print(
+    "Picky classifier class mapping:",
+    list(enumerate(class_names))
+)
 
 
 # ============================================================
@@ -1003,6 +1023,8 @@ def locate_phone_book(
         best_ocr_text = ""
         best_rotation = ""
         best_keyword = None
+        best_ocr_support_score = 0.0
+        best_ocr_support_text = ""
 
         for rr in det[
             "ocr_rotation_results"
@@ -1027,6 +1049,23 @@ def locate_phone_book(
                     "final_score"
                 ]
             )
+
+            support_score = max(
+                float(
+                    score_info[
+                        "phrase_score"
+                    ]
+                ),
+                float(
+                    score_info[
+                        "author_score"
+                    ]
+                )
+            )
+
+            if support_score > best_ocr_support_score:
+                best_ocr_support_score = support_score
+                best_ocr_support_text = text
 
             keyword_info = keyword_ocr_rescue(
                 text,
@@ -1092,6 +1131,29 @@ def locate_phone_book(
             classifier_result
         )
 
+        print({
+            "detection": det["index"],
+            "ocr_match_score": round(best_ocr_score, 2),
+            "ocr_support_score": round(
+                best_ocr_support_score,
+                2
+            ),
+            "ocr_text": (
+                best_ocr_text
+                or best_ocr_support_text
+            ),
+            "classifier_book": classifier_book,
+            "classifier_confidence": round(
+                classifier_conf,
+                4
+            ),
+            "classifier_margin": (
+                round(margin, 4)
+                if margin is not None
+                else None
+            )
+        })
+
         accepted = False
         method = None
         final_score = 0.0
@@ -1105,18 +1167,24 @@ def locate_phone_book(
                 else "OCR"
             )
 
-            final_score = best_ocr_score
+            final_score = min(
+                99.0,
+                best_ocr_score
+            )
 
         elif (
             classifier_book == requested_book
             and classifier_conf
             >= CLASSIFIER_STRONG_THRESHOLD
+            and best_ocr_support_score
+            >= CLASSIFIER_OCR_SUPPORT_THRESHOLD
         ):
             accepted = True
-            method = "EfficientNet fallback"
-            final_score = (
-                classifier_conf
-                * 100
+            method = "OCR-assisted EfficientNet fallback"
+            final_score = min(
+                99.0,
+                0.70 * classifier_conf * 100
+                + 0.30 * best_ocr_support_score
             )
 
         elif (
@@ -1125,21 +1193,25 @@ def locate_phone_book(
             >= CLASSIFIER_DYNAMIC_THRESHOLD
             and margin is not None
             and margin >= MIN_MARGIN
+            and best_ocr_support_score
+            >= DYNAMIC_OCR_SUPPORT_THRESHOLD
         ):
             accepted = True
             method = (
-                "EfficientNet strong-margin fallback"
+                "OCR-assisted strong-margin fallback"
             )
 
-            final_score = (
-                classifier_conf
-                * 100
+            final_score = min(
+                99.0,
+                0.60 * classifier_conf * 100
+                + 0.40 * best_ocr_support_score
             )
 
         if accepted:
             candidates.append({
                 **det,
                 "ocr_score": best_ocr_score,
+                "ocr_support_score": best_ocr_support_score,
                 "ocr_text": best_ocr_text,
                 "rotation": best_rotation,
                 "keyword": best_keyword,
@@ -2090,10 +2162,10 @@ else:
             right.markdown(f"**Author:** {author}")
 
         right.markdown(
-            f"**Confidence:** {result['final_score']:.1f}%  \n"
+            f"**Match score:** {result['final_score']:.1f}%  \n"
             f"**Search time:** {runtime:.1f} sec"
             if runtime is not None
-            else f"**Confidence:** {result['final_score']:.1f}%"
+            else f"**Match score:** {result['final_score']:.1f}%"
         )
 
         if clean_user_query(original_query) != clean_user_query(title):
