@@ -3,6 +3,19 @@ import re
 import json
 import base64
 import time
+
+# ============================================================
+# PERFORMANCE PROFILING
+# Measures stage timings only. This does NOT change model logic,
+# thresholds, preprocessing, OCR rotations, or predictions.
+# ============================================================
+
+def _now():
+    return time.perf_counter()
+
+def _elapsed(start):
+    return time.perf_counter() - start
+
 import requests
 
 import cv2
@@ -1771,6 +1784,9 @@ if "last_query" not in st.session_state:
 if "runtime_seconds" not in st.session_state:
     st.session_state.runtime_seconds = None
 
+if "profile_timings" not in st.session_state:
+    st.session_state.profile_timings = None
+
 
 # ============================================================
 # LAYOUT
@@ -1921,6 +1937,11 @@ if search_clicked:
             try:
                 start_time = time.time()
 
+                detector_seconds = 0.0
+                prepare_seconds = 0.0
+                analyze_seconds = 0.0
+                match_seconds = 0.0
+
                 bytes_data = source_file.getvalue()
                 arr = np.frombuffer(bytes_data, np.uint8)
                 bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -1936,12 +1957,16 @@ if search_clicked:
                 )
 
                 # Process without temporary layout placeholders.
+                t_detector = _now()
                 predictions = run_detector(image_rgb)
+                detector_seconds = _elapsed(t_detector)
 
+                t_prepare = _now()
                 detections = prepare_detections(
                     image_rgb,
                     predictions
                 )
+                prepare_seconds = _elapsed(t_prepare)
 
                 if not detections:
                     st.session_state.result_image = image_rgb
@@ -1951,15 +1976,19 @@ if search_clicked:
                         query
                     )
                 else:
+                    t_analyze = _now()
                     analyzed = analyze_detections(
                         image_rgb,
                         detections
                     )
+                    analyze_seconds = _elapsed(t_analyze)
 
+                    t_match = _now()
                     result = locate_phone_book(
                         analyzed,
                         requested_book
                     )
+                    match_seconds = _elapsed(t_match)
 
                     if result is None:
                         st.session_state.result_image = image_rgb
@@ -1986,6 +2015,14 @@ if search_clicked:
                 st.session_state.runtime_seconds = (
                     time.time() - start_time
                 )
+
+                st.session_state.profile_timings = {
+                    "RF-DETR": detector_seconds,
+                    "Prepare detections": prepare_seconds,
+                    "OCR + classifier analysis": analyze_seconds,
+                    "Final matching": match_seconds,
+                    "Total": st.session_state.runtime_seconds,
+                }
 
             except Exception as exc:
                 st.session_state.result_image = None
@@ -2059,6 +2096,11 @@ else:
             )
 
         right.success("🎉 **NOW... PICK YOUR BOOK! 📚**")
+
+        if st.session_state.profile_timings:
+            with right.expander("⏱️ Performance details"):
+                for stage, seconds in st.session_state.profile_timings.items():
+                    st.write(f"{stage}: **{seconds:.1f} sec**")
 
     elif state == "NOT_FOUND":
         _, requested_book, original_query = (
