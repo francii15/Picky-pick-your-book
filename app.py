@@ -1227,11 +1227,35 @@ def locate_book_query_aware(
 
             return result
 
-        # If OCR already accepted the requested book, the original
-        # locator would use OCR and ignore classifier output.
-        # Therefore skipping the classifier here does not change
-        # the decision rule.
-        if best_ocr_score >= OCR_THRESHOLD_PHONE:
+        # Cross-book safety check:
+        # If OCR strongly identifies this crop as ANOTHER known
+        # catalogue book, do not accept it for the requested book.
+        (
+            strongest_ocr_book,
+            strongest_ocr_book_score,
+            strongest_ocr_text
+        ) = strongest_known_book_from_ocr(
+            rotation_results
+        )
+
+        conflicting_known_book = (
+            strongest_ocr_book is not None
+            and strongest_ocr_book != requested_book
+            and strongest_ocr_book_score
+            >= OCR_OTHER_BOOK_STRONG_THRESHOLD
+            and (
+                strongest_ocr_book_score
+                - best_ocr_score
+            )
+            >= OCR_OTHER_BOOK_MARGIN
+        )
+
+        # Only accept OCR when it does not strongly contradict the
+        # crop's best-known OCR identity.
+        if (
+            best_ocr_score >= OCR_THRESHOLD_PHONE
+            and not conflicting_known_book
+        ):
             candidates.append({
                 "index": item["index"],
                 "confidence": item["confidence"],
@@ -1256,29 +1280,6 @@ def locate_book_query_aware(
             })
 
             continue
-
-        # OCR was not strong enough. Before classifier fallback,
-        # check whether OCR strongly identifies this crop as some
-        # OTHER known catalogue book.
-        (
-            strongest_ocr_book,
-            strongest_ocr_book_score,
-            strongest_ocr_text
-        ) = strongest_known_book_from_ocr(
-            rotation_results
-        )
-
-        conflicting_known_book = (
-            strongest_ocr_book is not None
-            and strongest_ocr_book != requested_book
-            and strongest_ocr_book_score
-            >= OCR_OTHER_BOOK_STRONG_THRESHOLD
-            and (
-                strongest_ocr_book_score
-                - best_ocr_score
-            )
-            >= OCR_OTHER_BOOK_MARGIN
-        )
 
         # If OCR clearly says this is another known book, skip the
         # classifier entirely for this crop.
@@ -1586,7 +1587,10 @@ def locate_phone_book(
         method = None
         final_score = 0.0
 
-        if best_ocr_score >= OCR_THRESHOLD_PHONE:
+        if (
+            best_ocr_score >= OCR_THRESHOLD_PHONE
+            and not conflicting_known_book
+        ):
             accepted = True
 
             method = (
@@ -1611,7 +1615,8 @@ def locate_phone_book(
             )
 
         elif (
-            classifier_book == requested_book
+            not conflicting_known_book
+            and classifier_book == requested_book
             and classifier_conf
             >= CLASSIFIER_DYNAMIC_THRESHOLD
             and margin is not None
@@ -2528,6 +2533,21 @@ with left:
             type="primary",
             use_container_width=True
         )
+
+        if st.button(
+            "♻️ Clear Shelf Cache",
+            use_container_width=True
+        ):
+            st.session_state.shelf_cache_hash = None
+            st.session_state.shelf_cache_image = None
+            st.session_state.shelf_cache_detections = None
+            st.session_state.shelf_cache_analyzed = None
+            st.session_state.shelf_cache_timings = None
+            st.session_state.result_image = None
+            st.session_state.result_html = None
+            st.session_state.runtime_seconds = None
+            st.session_state.profile_timings = None
+            st.rerun()
 
         if selected_queries:
             resolved_preview = []
