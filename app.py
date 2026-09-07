@@ -907,6 +907,357 @@ def analyze_detections(
 
 
 # ============================================================
+# STAGE 1 SPEED OPTIMIZATION
+# Query-aware processing with safe early stopping.
+#
+# IMPORTANT:
+# - Same RF-DETR detections
+# - Same EasyOCR
+# - Same 4 OCR rotations
+# - Same OCR thresholds/scoring
+# - Same EfficientNetB0 model/preprocessing
+# - Same fallback thresholds
+#
+# What changes:
+# - OCR is scored immediately for the requested book.
+# - If OCR reaches 100%, we stop because no later candidate
+#   can beat that score.
+# - EfficientNet is NOT run when OCR already accepts the crop,
+#   because the original locator ignored classifier output in
+#   that case anyway.
+# ============================================================
+
+def locate_book_query_aware(
+    image_rgb,
+    detections,
+    requested_book
+):
+    candidates = []
+
+    ocr_calls = 0
+    classifier_calls = 0
+
+    for item in detections:
+        x1, y1, x2, y2 = item["box"]
+
+        crop = image_rgb[
+            y1:y2,
+            x1:x2
+        ].copy()
+
+        if crop.size == 0:
+            continue
+
+        rotations = [
+            (
+                "0",
+                crop
+            ),
+            (
+                "90",
+                cv2.rotate(
+                    crop,
+                    cv2.ROTATE_90_CLOCKWISE
+                )
+            ),
+            (
+                "180",
+                cv2.rotate(
+                    crop,
+                    cv2.ROTATE_180
+                )
+            ),
+            (
+                "270",
+                cv2.rotate(
+                    crop,
+                    cv2.ROTATE_90_COUNTERCLOCKWISE
+                )
+            )
+        ]
+
+        best_ocr_score = 0.0
+        best_ocr_text = ""
+        best_rotation = ""
+        best_keyword = None
+        rotation_results = []
+
+        for angle, rotated_crop in rotations:
+            ocr_calls += 1
+
+            results = reader.readtext(
+                rotated_crop,
+                detail=1,
+                paragraph=False
+            )
+
+            detected_text = []
+            confidences = []
+
+            for _, detected, confidence in results:
+                if confidence >= 0.15:
+                    detected_text.append(
+                        detected
+                    )
+                    confidences.append(
+                        confidence
+                    )
+
+            combined_text = " ".join(
+                detected_text
+            )
+
+            cleaned_text = clean_ocr_text(
+                combined_text
+            )
+
+            avg_conf = (
+                float(
+                    np.mean(confidences)
+                )
+                if confidences
+                else 0
+            )
+
+            rotation_results.append({
+                "rotation": angle,
+                "text": cleaned_text,
+                "confidence": avg_conf
+            })
+
+            if not cleaned_text:
+                continue
+
+            score_info = score_book_strict(
+                cleaned_text,
+                BOOK_METADATA[
+                    requested_book
+                ]
+            )
+
+            strict_score = float(
+                score_info[
+                    "final_score"
+                ]
+            )
+
+            keyword_info = keyword_ocr_rescue(
+                cleaned_text,
+                requested_book
+            )
+
+            keyword_score = 0.0
+
+            if keyword_info[
+                "matched"
+            ]:
+                keyword_score = float(
+                    keyword_info[
+                        "score"
+                    ]
+                )
+
+            current_score = max(
+                strict_score,
+                keyword_score
+            )
+
+            if current_score > best_ocr_score:
+                best_ocr_score = current_score
+                best_ocr_text = cleaned_text
+                best_rotation = angle
+
+                if (
+                    keyword_info[
+                        "matched"
+                    ]
+                    and keyword_score
+                    >= strict_score
+                ):
+                    best_keyword = keyword_info[
+                        "keyword"
+                    ]
+                else:
+                    best_keyword = None
+
+            # Safe early stop:
+            # 100% is the maximum possible final OCR score.
+            # Because detections are processed in the same order,
+            # returning the first 100% candidate matches the old
+            # max() behavior for an unbeatable score.
+            if best_ocr_score >= 100.0:
+                result = {
+                    "index": item["index"],
+                    "confidence": item["confidence"],
+                    "box": item["box"],
+                    "crop": crop,
+                    "ocr_rotation_results": rotation_results,
+                    "classifier_scores": None,
+                    "ocr_score": best_ocr_score,
+                    "ocr_text": best_ocr_text,
+                    "rotation": best_rotation,
+                    "keyword": best_keyword,
+                    "classifier_book": None,
+                    "classifier_confidence": 0.0,
+                    "second_confidence": None,
+                    "classifier_margin": None,
+                    "method": (
+                        "OCR / keyword match"
+                        if best_keyword
+                        else "OCR"
+                    ),
+                    "final_score": best_ocr_score,
+                    "_ocr_calls": ocr_calls,
+                    "_classifier_calls": classifier_calls,
+                }
+
+                return result
+
+        # If OCR already accepted the requested book, the original
+        # locator would use OCR and ignore classifier output.
+        # Therefore skipping the classifier here does not change
+        # the decision rule.
+        if best_ocr_score >= OCR_THRESHOLD_PHONE:
+            candidates.append({
+                "index": item["index"],
+                "confidence": item["confidence"],
+                "box": item["box"],
+                "crop": crop,
+                "ocr_rotation_results": rotation_results,
+                "classifier_scores": None,
+                "ocr_score": best_ocr_score,
+                "ocr_text": best_ocr_text,
+                "rotation": best_rotation,
+                "keyword": best_keyword,
+                "classifier_book": None,
+                "classifier_confidence": 0.0,
+                "second_confidence": None,
+                "classifier_margin": None,
+                "method": (
+                    "OCR / keyword match"
+                    if best_keyword
+                    else "OCR"
+                ),
+                "final_score": best_ocr_score
+            })
+
+            continue
+
+        # OCR was not strong enough, so use the exact same
+        # EfficientNet fallback rules as before.
+        classifier_calls += 1
+
+        classifier_result = classify_crop(
+            crop
+        )
+
+        classifier_class = classifier_result[
+            "predicted_class"
+        ]
+
+        classifier_conf = float(
+            classifier_result[
+                "confidence"
+            ]
+        )
+
+        classifier_book = CLASS_TO_METADATA.get(
+            classifier_class
+        )
+
+        second_conf, margin = get_classifier_margin(
+            classifier_result
+        )
+
+        accepted = False
+        method = None
+        final_score = 0.0
+
+        if (
+            classifier_book == requested_book
+            and classifier_conf
+            >= CLASSIFIER_STRONG_THRESHOLD
+        ):
+            accepted = True
+            method = "EfficientNet fallback"
+            final_score = (
+                classifier_conf
+                * 100
+            )
+
+        elif (
+            classifier_book == requested_book
+            and classifier_conf
+            >= CLASSIFIER_DYNAMIC_THRESHOLD
+            and margin is not None
+            and margin >= MIN_MARGIN
+        ):
+            accepted = True
+            method = (
+                "EfficientNet strong-margin fallback"
+            )
+            final_score = (
+                classifier_conf
+                * 100
+            )
+
+        if accepted:
+            candidates.append({
+                "index": item["index"],
+                "confidence": item["confidence"],
+                "box": item["box"],
+                "crop": crop,
+                "ocr_rotation_results": rotation_results,
+                "classifier_scores": classifier_result,
+                "ocr_score": best_ocr_score,
+                "ocr_text": best_ocr_text,
+                "rotation": best_rotation,
+                "keyword": best_keyword,
+                "classifier_book": classifier_book,
+                "classifier_confidence": classifier_conf,
+                "second_confidence": second_conf,
+                "classifier_margin": margin,
+                "method": method,
+                "final_score": final_score
+            })
+
+            # Also safe: classifier score cannot exceed 100%.
+            if final_score >= 100.0:
+                candidates[-1][
+                    "_ocr_calls"
+                ] = ocr_calls
+                candidates[-1][
+                    "_classifier_calls"
+                ] = classifier_calls
+
+                return candidates[-1]
+
+    if not candidates:
+        return {
+            "_not_found": True,
+            "_ocr_calls": ocr_calls,
+            "_classifier_calls": classifier_calls
+        }
+
+    best = max(
+        candidates,
+        key=lambda x: x[
+            "final_score"
+        ]
+    )
+
+    best[
+        "_ocr_calls"
+    ] = ocr_calls
+
+    best[
+        "_classifier_calls"
+    ] = classifier_calls
+
+    return best
+
+
+# ============================================================
 # FINAL LOCATOR
 # ============================================================
 
@@ -1941,6 +2292,8 @@ if search_clicked:
                 prepare_seconds = 0.0
                 analyze_seconds = 0.0
                 match_seconds = 0.0
+                ocr_calls = 0
+                classifier_calls = 0
 
                 bytes_data = source_file.getvalue()
                 arr = np.frombuffer(bytes_data, np.uint8)
@@ -1977,18 +2330,41 @@ if search_clicked:
                     )
                 else:
                     t_analyze = _now()
-                    analyzed = analyze_detections(
-                        image_rgb,
-                        detections
-                    )
-                    analyze_seconds = _elapsed(t_analyze)
 
-                    t_match = _now()
-                    result = locate_phone_book(
-                        analyzed,
+                    result = locate_book_query_aware(
+                        image_rgb,
+                        detections,
                         requested_book
                     )
-                    match_seconds = _elapsed(t_match)
+
+                    analyze_seconds = _elapsed(
+                        t_analyze
+                    )
+
+                    # Matching now happens during query-aware
+                    # analysis, so there is no separate matching
+                    # pass.
+                    match_seconds = 0.0
+
+                    ocr_calls = int(
+                        result.get(
+                            "_ocr_calls",
+                            0
+                        )
+                    )
+
+                    classifier_calls = int(
+                        result.get(
+                            "_classifier_calls",
+                            0
+                        )
+                    )
+
+                    if result.get(
+                        "_not_found",
+                        False
+                    ):
+                        result = None
 
                     if result is None:
                         st.session_state.result_image = image_rgb
@@ -2021,6 +2397,8 @@ if search_clicked:
                     "Prepare detections": prepare_seconds,
                     "OCR + classifier analysis": analyze_seconds,
                     "Final matching": match_seconds,
+                    "OCR calls": ocr_calls,
+                    "Classifier calls": classifier_calls,
                     "Total": st.session_state.runtime_seconds,
                 }
 
@@ -2099,8 +2477,18 @@ else:
 
         if st.session_state.profile_timings:
             with right.expander("⏱️ Performance details"):
-                for stage, seconds in st.session_state.profile_timings.items():
-                    st.write(f"{stage}: **{seconds:.1f} sec**")
+                for stage, value in st.session_state.profile_timings.items():
+                    if stage in [
+                        "OCR calls",
+                        "Classifier calls"
+                    ]:
+                        st.write(
+                            f"{stage}: **{int(value)}**"
+                        )
+                    else:
+                        st.write(
+                            f"{stage}: **{value:.1f} sec**"
+                        )
 
     elif state == "NOT_FOUND":
         _, requested_book, original_query = (
