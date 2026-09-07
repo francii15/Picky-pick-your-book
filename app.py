@@ -1905,6 +1905,44 @@ def draw_multiple_results(
     return output
 
 
+def draw_all_detector_boxes(
+    image_rgb,
+    detections
+):
+    """
+    Draw every prepared RF-DETR detection before OCR/classification.
+    Used only for detector diagnostics.
+    """
+    output = image_rgb.copy()
+
+    for item in detections:
+        x1, y1, x2, y2 = item["box"]
+        conf = float(item["confidence"])
+
+        cv2.rectangle(
+            output,
+            (x1, y1),
+            (x2, y2),
+            (0, 255, 0),
+            3
+        )
+
+        label = f"Book {item['index']}  {conf:.2f}"
+
+        cv2.putText(
+            output,
+            label,
+            (x1, max(25, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA
+        )
+
+    return output
+
+
 # ============================================================
 # UI CSS
 # ============================================================
@@ -2534,6 +2572,16 @@ with left:
             use_container_width=True
         )
 
+        detector_debug_mode = st.checkbox(
+            "🧪 Detector-only debug view",
+            value=False,
+            help=(
+                "Shows every RF-DETR book box before OCR/classification. "
+                "Use this to verify whether thin books such as "
+                "Lateral Thinking and The Golden Gate are detected at all."
+            )
+        )
+
         if st.button(
             "♻️ Clear Shelf Cache",
             use_container_width=True
@@ -2693,6 +2741,61 @@ if search_clicked:
                     bgr,
                     cv2.COLOR_BGR2RGB
                 )
+
+                # ------------------------------------------------
+                # DETECTOR-ONLY DEBUG MODE
+                # Runs RF-DETR and prepares boxes, but intentionally
+                # skips OCR, classifier, cache reuse, and matching.
+                # ------------------------------------------------
+                if detector_debug_mode:
+                    t_detector = _now()
+
+                    predictions = run_detector(
+                        image_rgb
+                    )
+
+                    detector_seconds = _elapsed(
+                        t_detector
+                    )
+
+                    t_prepare = _now()
+
+                    detections = prepare_detections(
+                        image_rgb,
+                        predictions
+                    )
+
+                    prepare_seconds = _elapsed(
+                        t_prepare
+                    )
+
+                    debug_image = draw_all_detector_boxes(
+                        image_rgb,
+                        detections
+                    )
+
+                    st.session_state.result_image = debug_image
+
+                    st.session_state.runtime_seconds = (
+                        time.time() - start_time
+                    )
+
+                    st.session_state.profile_timings = {
+                        "RF-DETR": detector_seconds,
+                        "Prepare detections": prepare_seconds,
+                        "OCR + classifier analysis": 0.0,
+                        "Final matching": 0.0,
+                        "OCR calls": 0,
+                        "Classifier calls": 0,
+                        "Total": st.session_state.runtime_seconds,
+                    }
+
+                    st.session_state.result_html = (
+                        "DETECTOR_DEBUG",
+                        len(detections)
+                    )
+
+                    st.stop()
 
                 # ------------------------------------------------
                 # FAST PATH:
@@ -3143,6 +3246,32 @@ else:
                             + "**"
                         )
                     elif stage in [
+                        "OCR calls",
+                        "Classifier calls"
+                    ]:
+                        st.write(
+                            f"{stage}: **{int(value)}**"
+                        )
+                    else:
+                        st.write(
+                            f"{stage}: **{value:.1f} sec**"
+                        )
+
+    elif state == "DETECTOR_DEBUG":
+        _, detection_count = st.session_state.result_html
+
+        right.info(
+            f"🧪 **Detector-only view** — RF-DETR produced "
+            f"**{detection_count} candidate book boxes**.\n\n"
+            "Check whether **Lateral Thinking** and **The Golden Gate** "
+            "have green boxes. If they do not, the miss is happening "
+            "at the detector stage before OCR/classification."
+        )
+
+        if st.session_state.profile_timings:
+            with right.expander("⏱️ Performance details"):
+                for stage, value in st.session_state.profile_timings.items():
+                    if stage in [
                         "OCR calls",
                         "Classifier calls"
                     ]:
