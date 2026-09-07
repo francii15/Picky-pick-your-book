@@ -56,6 +56,11 @@ CLASSIFIER_STRONG_THRESHOLD = 0.85
 CLASSIFIER_DYNAMIC_THRESHOLD = 0.75
 MIN_MARGIN = 0.20
 
+# Prevent a crop that OCR clearly identifies as ANOTHER known book
+# from being reassigned by the closed-set EfficientNet classifier.
+OCR_OTHER_BOOK_STRONG_THRESHOLD = 85.0
+OCR_OTHER_BOOK_MARGIN = 10.0
+
 # Stage 2A speed optimization:
 # Try 0° and 90° first. Only skip 180°/270° when the requested
 # book already has a very strong OCR match.
@@ -597,6 +602,80 @@ def keyword_ocr_rescue(
         "keyword": best_keyword,
         "matched": False
     }
+
+
+
+def strongest_known_book_from_ocr(
+    rotation_results
+):
+    """
+    Determine which known catalogue book is most strongly supported
+    by OCR across all rotations.
+
+    This is used only as a safety guard. It does NOT replace the
+    existing requested-book scoring logic.
+    """
+    best_book = None
+    best_score = 0.0
+    best_text = ""
+
+    for rr in rotation_results:
+        text = rr.get(
+            "text",
+            ""
+        )
+
+        if not text:
+            continue
+
+        for book_key in BOOK_METADATA:
+            score_info = score_book_strict(
+                text,
+                BOOK_METADATA[
+                    book_key
+                ]
+            )
+
+            strict_score = float(
+                score_info[
+                    "final_score"
+                ]
+            )
+
+            keyword_info = keyword_ocr_rescue(
+                text,
+                book_key
+            )
+
+            keyword_score = (
+                float(
+                    keyword_info[
+                        "score"
+                    ]
+                )
+                if keyword_info[
+                    "matched"
+                ]
+                else 0.0
+            )
+
+            current_score = max(
+                strict_score,
+                keyword_score
+            )
+
+            if current_score > best_score:
+                best_score = current_score
+                best_book = book_key
+                best_text = text
+
+    return (
+        best_book,
+        best_score,
+        best_text
+    )
+
+
 
 
 # ============================================================
@@ -1178,8 +1257,35 @@ def locate_book_query_aware(
 
             continue
 
-        # OCR was not strong enough, so use the exact same
-        # EfficientNet fallback rules as before.
+        # OCR was not strong enough. Before classifier fallback,
+        # check whether OCR strongly identifies this crop as some
+        # OTHER known catalogue book.
+        (
+            strongest_ocr_book,
+            strongest_ocr_book_score,
+            strongest_ocr_text
+        ) = strongest_known_book_from_ocr(
+            rotation_results
+        )
+
+        conflicting_known_book = (
+            strongest_ocr_book is not None
+            and strongest_ocr_book != requested_book
+            and strongest_ocr_book_score
+            >= OCR_OTHER_BOOK_STRONG_THRESHOLD
+            and (
+                strongest_ocr_book_score
+                - best_ocr_score
+            )
+            >= OCR_OTHER_BOOK_MARGIN
+        )
+
+        # If OCR clearly says this is another known book, skip the
+        # classifier entirely for this crop.
+        if conflicting_known_book:
+            continue
+
+        # Otherwise use the same EfficientNet fallback rules as before.
         classifier_calls += 1
 
         classifier_result = classify_crop(
@@ -1221,7 +1327,8 @@ def locate_book_query_aware(
             )
 
         elif (
-            classifier_book == requested_book
+            not conflicting_known_book
+            and classifier_book == requested_book
             and classifier_conf
             >= CLASSIFIER_DYNAMIC_THRESHOLD
             and margin is not None
@@ -1253,7 +1360,10 @@ def locate_book_query_aware(
                 "second_confidence": second_conf,
                 "classifier_margin": margin,
                 "method": method,
-                "final_score": final_score
+                "final_score": final_score,
+                "strongest_ocr_book": strongest_ocr_book,
+                "strongest_ocr_book_score": strongest_ocr_book_score,
+                "ocr_conflict_blocked": conflicting_known_book
             })
 
             # Also safe: classifier score cannot exceed 100%.
@@ -1426,6 +1536,30 @@ def locate_phone_book(
                 else:
                     best_keyword = None
 
+        # Safety guard:
+        # If OCR strongly identifies this crop as another known book,
+        # do not allow the closed-set classifier to force it into the
+        # requested class.
+        (
+            strongest_ocr_book,
+            strongest_ocr_book_score,
+            strongest_ocr_text
+        ) = strongest_known_book_from_ocr(
+            det["ocr_rotation_results"]
+        )
+
+        conflicting_known_book = (
+            strongest_ocr_book is not None
+            and strongest_ocr_book != requested_book
+            and strongest_ocr_book_score
+            >= OCR_OTHER_BOOK_STRONG_THRESHOLD
+            and (
+                strongest_ocr_book_score
+                - best_ocr_score
+            )
+            >= OCR_OTHER_BOOK_MARGIN
+        )
+
         classifier_result = det[
             "classifier_scores"
         ]
@@ -1464,7 +1598,8 @@ def locate_phone_book(
             final_score = best_ocr_score
 
         elif (
-            classifier_book == requested_book
+            not conflicting_known_book
+            and classifier_book == requested_book
             and classifier_conf
             >= CLASSIFIER_STRONG_THRESHOLD
         ):
