@@ -55,6 +55,11 @@ CLASSIFIER_STRONG_THRESHOLD = 0.85
 CLASSIFIER_DYNAMIC_THRESHOLD = 0.75
 MIN_MARGIN = 0.20
 
+# Stage 2A speed optimization:
+# Try 0° and 90° first. Only skip 180°/270° when the requested
+# book already has a very strong OCR match.
+PROGRESSIVE_OCR_STRONG_THRESHOLD = 90.0
+
 
 # ============================================================
 # SECRET
@@ -948,7 +953,7 @@ def locate_book_query_aware(
         if crop.size == 0:
             continue
 
-        rotations = [
+        primary_rotations = [
             (
                 "0",
                 crop
@@ -959,7 +964,10 @@ def locate_book_query_aware(
                     crop,
                     cv2.ROTATE_90_CLOCKWISE
                 )
-            ),
+            )
+        ]
+
+        fallback_rotations = [
             (
                 "180",
                 cv2.rotate(
@@ -982,7 +990,13 @@ def locate_book_query_aware(
         best_keyword = None
         rotation_results = []
 
-        for angle, rotated_crop in rotations:
+        def _score_rotation(angle, rotated_crop):
+            nonlocal best_ocr_score
+            nonlocal best_ocr_text
+            nonlocal best_rotation
+            nonlocal best_keyword
+            nonlocal ocr_calls
+
             ocr_calls += 1
 
             results = reader.readtext(
@@ -1026,7 +1040,7 @@ def locate_book_query_aware(
             })
 
             if not cleaned_text:
-                continue
+                return
 
             score_info = score_book_strict(
                 cleaned_text,
@@ -1080,38 +1094,58 @@ def locate_book_query_aware(
                 else:
                     best_keyword = None
 
-            # Safe early stop:
-            # 100% is the maximum possible final OCR score.
-            # Because detections are processed in the same order,
-            # returning the first 100% candidate matches the old
-            # max() behavior for an unbeatable score.
-            if best_ocr_score >= 100.0:
-                result = {
-                    "index": item["index"],
-                    "confidence": item["confidence"],
-                    "box": item["box"],
-                    "crop": crop,
-                    "ocr_rotation_results": rotation_results,
-                    "classifier_scores": None,
-                    "ocr_score": best_ocr_score,
-                    "ocr_text": best_ocr_text,
-                    "rotation": best_rotation,
-                    "keyword": best_keyword,
-                    "classifier_book": None,
-                    "classifier_confidence": 0.0,
-                    "second_confidence": None,
-                    "classifier_margin": None,
-                    "method": (
-                        "OCR / keyword match"
-                        if best_keyword
-                        else "OCR"
-                    ),
-                    "final_score": best_ocr_score,
-                    "_ocr_calls": ocr_calls,
-                    "_classifier_calls": classifier_calls,
-                }
+        # Stage 2A:
+        # Always try 0° and 90° first.
+        for angle, rotated_crop in primary_rotations:
+            _score_rotation(
+                angle,
+                rotated_crop
+            )
 
-                return result
+            # 100% is unbeatable, so stop immediately.
+            if best_ocr_score >= 100.0:
+                break
+
+        # Only use 180° and 270° when the first two rotations
+        # did not already give a very strong requested-book match.
+        if best_ocr_score < PROGRESSIVE_OCR_STRONG_THRESHOLD:
+            for angle, rotated_crop in fallback_rotations:
+                _score_rotation(
+                    angle,
+                    rotated_crop
+                )
+
+                if best_ocr_score >= 100.0:
+                    break
+
+        # Safe whole-search early stop on an unbeatable OCR result.
+        if best_ocr_score >= 100.0:
+            result = {
+                "index": item["index"],
+                "confidence": item["confidence"],
+                "box": item["box"],
+                "crop": crop,
+                "ocr_rotation_results": rotation_results,
+                "classifier_scores": None,
+                "ocr_score": best_ocr_score,
+                "ocr_text": best_ocr_text,
+                "rotation": best_rotation,
+                "keyword": best_keyword,
+                "classifier_book": None,
+                "classifier_confidence": 0.0,
+                "second_confidence": None,
+                "classifier_margin": None,
+                "method": (
+                    "OCR / keyword match"
+                    if best_keyword
+                    else "OCR"
+                ),
+                "final_score": best_ocr_score,
+                "_ocr_calls": ocr_calls,
+                "_classifier_calls": classifier_calls,
+            }
+
+            return result
 
         # If OCR already accepted the requested book, the original
         # locator would use OCR and ignore classifier output.
