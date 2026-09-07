@@ -3,6 +3,7 @@ import re
 import json
 import base64
 import time
+import hashlib
 
 # ============================================================
 # PERFORMANCE PROFILING
@@ -1640,6 +1641,130 @@ def draw_result(
     return output
 
 
+def draw_multiple_results(
+    image_rgb,
+    found_results
+):
+    """
+    Draw several matched books on the same original shelf image.
+
+    found_results:
+        list of tuples:
+        (requested_book, result_dict)
+    """
+    output = image_rgb.copy()
+
+    green = (
+        18,
+        170,
+        83
+    )
+
+    thickness = max(
+        5,
+        int(
+            output.shape[1]
+            / 350
+        )
+    )
+
+    font_scale = max(
+        0.65,
+        min(
+            1.35,
+            output.shape[1]
+            / 1250
+        )
+    )
+
+    text_thickness = max(
+        2,
+        int(
+            output.shape[1]
+            / 600
+        )
+    )
+
+    for requested_book, result in found_results:
+        x1, y1, x2, y2 = result["box"]
+
+        cv2.rectangle(
+            output,
+            (x1, y1),
+            (x2, y2),
+            green,
+            thickness
+        )
+
+        title = DISPLAY[
+            requested_book
+        ][0]
+
+        label = (
+            f"{title}  "
+            f"{result['final_score']:.0f}%"
+        )
+
+        (tw, th), baseline = cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            text_thickness
+        )
+
+        tx = max(
+            4,
+            min(
+                x1,
+                output.shape[1]
+                - tw
+                - 24
+            )
+        )
+
+        ty = max(
+            th + 24,
+            y1 - 12
+        )
+
+        cv2.rectangle(
+            output,
+            (
+                tx,
+                ty - th - 18
+            ),
+            (
+                min(
+                    output.shape[1] - 1,
+                    tx + tw + 22
+                ),
+                ty + baseline + 8
+            ),
+            green,
+            -1
+        )
+
+        cv2.putText(
+            output,
+            label,
+            (
+                tx + 10,
+                ty - 4
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (
+                255,
+                255,
+                255
+            ),
+            text_thickness,
+            cv2.LINE_AA
+        )
+
+    return output
+
+
 # ============================================================
 # UI CSS
 # ============================================================
@@ -2172,6 +2297,23 @@ if "runtime_seconds" not in st.session_state:
 if "profile_timings" not in st.session_state:
     st.session_state.profile_timings = None
 
+# Full-shelf cache used for multi-book search and repeated searches
+# on the same uploaded image.
+if "shelf_cache_hash" not in st.session_state:
+    st.session_state.shelf_cache_hash = None
+
+if "shelf_cache_image" not in st.session_state:
+    st.session_state.shelf_cache_image = None
+
+if "shelf_cache_detections" not in st.session_state:
+    st.session_state.shelf_cache_detections = None
+
+if "shelf_cache_analyzed" not in st.session_state:
+    st.session_state.shelf_cache_analyzed = None
+
+if "shelf_cache_timings" not in st.session_state:
+    st.session_state.shelf_cache_timings = None
+
 
 # ============================================================
 # LAYOUT
@@ -2224,9 +2366,9 @@ with left:
             <div class="section-head">
                 <div class="step-dot">2</div>
                 <div>
-                    <div class="section-title">Which Book Should Picky Find?</div>
+                    <div class="section-title">Which Book(s) Should Picky Find?</div>
                     <div class="section-copy">
-                        Enter the title, part of the title, or the author's name.
+                        Choose one or more titles or authors. Picky can find multiple books from the same shelf image.
                     </div>
                 </div>
             </div>
@@ -2234,41 +2376,60 @@ with left:
             unsafe_allow_html=True
         )
 
-        # Searchable type-ahead input.
-        # As the user types a title or author, Streamlit filters
-        # the available suggestions automatically.
-        query = st.selectbox(
+        # Multi-book searchable type-ahead.
+        # Users may select one or several titles/authors.
+        selected_queries = st.multiselect(
             "Book query",
             options=SEARCH_OPTIONS,
-            index=None,
-            placeholder="Start typing a book title or author…",
+            default=None,
+            placeholder="Start typing one or more book titles or authors…",
             accept_new_options=True,
             label_visibility="collapsed",
-            key="book_query"
+            key="book_queries"
         )
 
-        # selectbox returns None until the user chooses or enters a value.
-        query = query or ""
-
         search_clicked = st.button(
-            "🔎 Find My Book",
+            "🔎 Find My Book(s)",
             type="primary",
             use_container_width=True
         )
 
-        if query.strip():
-            matched_book, matched_score = resolve_book_query(query)
+        if selected_queries:
+            resolved_preview = []
 
-            if matched_book is not None:
-                matched_title, matched_author = DISPLAY[matched_book]
+            for raw_query in selected_queries:
+                matched_book, matched_score = resolve_book_query(
+                    raw_query
+                )
 
-                suggestion_text = matched_title
+                if matched_book is not None:
+                    matched_title, matched_author = DISPLAY[
+                        matched_book
+                    ]
 
-                if matched_author:
-                    suggestion_text += f" — {matched_author}"
+                    suggestion_text = matched_title
 
+                    if matched_author:
+                        suggestion_text += (
+                            f" — {matched_author}"
+                        )
+
+                    if suggestion_text not in resolved_preview:
+                        resolved_preview.append(
+                            suggestion_text
+                        )
+
+            if resolved_preview:
                 st.caption(
-                    f"Suggested match: {suggestion_text}"
+                    "Suggested match"
+                    + (
+                        "es: "
+                        if len(resolved_preview) > 1
+                        else ": "
+                    )
+                    + " • ".join(
+                        resolved_preview
+                    )
                 )
 
         st.markdown(
@@ -2289,10 +2450,10 @@ with left:
 source_file = camera if camera is not None else upload
 
 if search_clicked:
-    st.session_state.last_query = query
     st.session_state.result_image = None
     st.session_state.result_html = None
     st.session_state.runtime_seconds = None
+    st.session_state.profile_timings = None
 
     if source_file is None:
         st.session_state.result_html = (
@@ -2301,21 +2462,37 @@ if search_clicked:
             "Upload an image or take a photo, then search again."
         )
 
-    elif not query.strip():
+    elif not selected_queries:
         st.session_state.result_html = (
             "MESSAGE",
             "🤔 Which book should Picky find?",
-            "Type a title, part of the title, or an author's name."
+            "Choose one or more titles/authors, then search."
         )
 
     else:
-        requested_book, query_score = resolve_book_query(query)
+        # Resolve user-entered titles/authors to canonical catalogue books.
+        requested_books = []
+        unresolved_queries = []
 
-        if requested_book is None:
+        for raw_query in selected_queries:
+            requested_book, query_score = resolve_book_query(
+                raw_query
+            )
+
+            if requested_book is None:
+                unresolved_queries.append(
+                    raw_query
+                )
+            elif requested_book not in requested_books:
+                requested_books.append(
+                    requested_book
+                )
+
+        if not requested_books:
             st.session_state.result_html = (
                 "MESSAGE",
-                "🤔 Picky isn't sure which book you mean.",
-                "Try a title, part of the title, or the author's name."
+                "🤔 Picky isn't sure which books you mean.",
+                "Try a title, part of a title, or an author's name."
             )
 
         else:
@@ -2328,10 +2505,22 @@ if search_clicked:
                 match_seconds = 0.0
                 ocr_calls = 0
                 classifier_calls = 0
+                cache_used = False
 
                 bytes_data = source_file.getvalue()
-                arr = np.frombuffer(bytes_data, np.uint8)
-                bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                image_hash = hashlib.sha256(
+                    bytes_data
+                ).hexdigest()
+
+                arr = np.frombuffer(
+                    bytes_data,
+                    np.uint8
+                )
+
+                bgr = cv2.imdecode(
+                    arr,
+                    cv2.IMREAD_COLOR
+                )
 
                 if bgr is None:
                     raise RuntimeError(
@@ -2343,90 +2532,253 @@ if search_clicked:
                     cv2.COLOR_BGR2RGB
                 )
 
-                # Process without temporary layout placeholders.
-                t_detector = _now()
-                predictions = run_detector(image_rgb)
-                detector_seconds = _elapsed(t_detector)
+                # ------------------------------------------------
+                # FAST PATH:
+                # If this shelf was already fully analyzed, reuse
+                # detector/OCR/classifier outputs immediately.
+                # ------------------------------------------------
+                if (
+                    st.session_state.shelf_cache_hash
+                    == image_hash
+                    and
+                    st.session_state.shelf_cache_analyzed
+                    is not None
+                ):
+                    cache_used = True
 
-                t_prepare = _now()
-                detections = prepare_detections(
-                    image_rgb,
-                    predictions
-                )
-                prepare_seconds = _elapsed(t_prepare)
-
-                if not detections:
-                    st.session_state.result_image = image_rgb
-                    st.session_state.result_html = (
-                        "NOT_FOUND",
-                        requested_book,
-                        query
+                    image_rgb = (
+                        st.session_state.shelf_cache_image
                     )
-                else:
-                    t_analyze = _now()
 
-                    result = locate_book_query_aware(
+                    detections = (
+                        st.session_state.shelf_cache_detections
+                    )
+
+                    analyzed = (
+                        st.session_state.shelf_cache_analyzed
+                    )
+
+                # ------------------------------------------------
+                # MULTI-BOOK SEARCH:
+                # Analyze the entire shelf once and cache it.
+                # This costs more on the first run, but all selected
+                # books and later searches on the same image reuse it.
+                # ------------------------------------------------
+                elif len(requested_books) > 1:
+                    t_detector = _now()
+
+                    predictions = run_detector(
+                        image_rgb
+                    )
+
+                    detector_seconds = _elapsed(
+                        t_detector
+                    )
+
+                    t_prepare = _now()
+
+                    detections = prepare_detections(
                         image_rgb,
-                        detections,
-                        requested_book
+                        predictions
                     )
 
-                    analyze_seconds = _elapsed(
-                        t_analyze
+                    prepare_seconds = _elapsed(
+                        t_prepare
                     )
 
-                    # Matching now happens during query-aware
-                    # analysis, so there is no separate matching
-                    # pass.
-                    match_seconds = 0.0
+                    if detections:
+                        t_analyze = _now()
 
-                    ocr_calls = int(
-                        result.get(
-                            "_ocr_calls",
-                            0
-                        )
-                    )
-
-                    classifier_calls = int(
-                        result.get(
-                            "_classifier_calls",
-                            0
-                        )
-                    )
-
-                    if result.get(
-                        "_not_found",
-                        False
-                    ):
-                        result = None
-
-                    if result is None:
-                        st.session_state.result_image = image_rgb
-                        st.session_state.result_html = (
-                            "NOT_FOUND",
-                            requested_book,
-                            query
-                        )
-                    else:
-                        output = draw_result(
+                        analyzed = analyze_detections(
                             image_rgb,
-                            result,
+                            detections
+                        )
+
+                        analyze_seconds = _elapsed(
+                            t_analyze
+                        )
+
+                        # analyze_detections performs four OCR
+                        # rotations + one classifier call per crop.
+                        ocr_calls = (
+                            len(analyzed)
+                            * 4
+                        )
+
+                        classifier_calls = len(
+                            analyzed
+                        )
+
+                        st.session_state.shelf_cache_hash = (
+                            image_hash
+                        )
+
+                        st.session_state.shelf_cache_image = (
+                            image_rgb
+                        )
+
+                        st.session_state.shelf_cache_detections = (
+                            detections
+                        )
+
+                        st.session_state.shelf_cache_analyzed = (
+                            analyzed
+                        )
+
+                        st.session_state.shelf_cache_timings = {
+                            "RF-DETR": detector_seconds,
+                            "Prepare detections": prepare_seconds,
+                            "Shelf analysis": analyze_seconds,
+                            "OCR calls": ocr_calls,
+                            "Classifier calls": classifier_calls,
+                        }
+                    else:
+                        analyzed = []
+
+                # ------------------------------------------------
+                # SINGLE-BOOK FIRST SEARCH:
+                # Keep Stage 2 progressive OCR for the fastest
+                # first lookup. This does NOT build a full shelf
+                # cache yet.
+                # ------------------------------------------------
+                else:
+                    t_detector = _now()
+
+                    predictions = run_detector(
+                        image_rgb
+                    )
+
+                    detector_seconds = _elapsed(
+                        t_detector
+                    )
+
+                    t_prepare = _now()
+
+                    detections = prepare_detections(
+                        image_rgb,
+                        predictions
+                    )
+
+                    prepare_seconds = _elapsed(
+                        t_prepare
+                    )
+
+                    analyzed = None
+
+                found_results = []
+                not_found_books = []
+
+                # ------------------------------------------------
+                # Match requested books
+                # ------------------------------------------------
+                if cache_used or len(requested_books) > 1:
+                    t_match = _now()
+
+                    for requested_book in requested_books:
+                        result = locate_phone_book(
+                            analyzed,
                             requested_book
                         )
 
-                        st.session_state.result_image = output
-                        st.session_state.result_html = (
-                            "FOUND",
-                            requested_book,
-                            query,
-                            result
+                        if result is None:
+                            not_found_books.append(
+                                requested_book
+                            )
+                        else:
+                            found_results.append(
+                                (
+                                    requested_book,
+                                    result
+                                )
+                            )
+
+                    match_seconds = _elapsed(
+                        t_match
+                    )
+
+                else:
+                    requested_book = requested_books[0]
+
+                    if not detections:
+                        not_found_books.append(
+                            requested_book
+                        )
+                    else:
+                        t_analyze = _now()
+
+                        result = locate_book_query_aware(
+                            image_rgb,
+                            detections,
+                            requested_book
                         )
 
+                        analyze_seconds = _elapsed(
+                            t_analyze
+                        )
+
+                        ocr_calls = int(
+                            result.get(
+                                "_ocr_calls",
+                                0
+                            )
+                        )
+
+                        classifier_calls = int(
+                            result.get(
+                                "_classifier_calls",
+                                0
+                            )
+                        )
+
+                        if result.get(
+                            "_not_found",
+                            False
+                        ):
+                            result = None
+
+                        if result is None:
+                            not_found_books.append(
+                                requested_book
+                            )
+                        else:
+                            found_results.append(
+                                (
+                                    requested_book,
+                                    result
+                                )
+                            )
+
+                # ------------------------------------------------
+                # Build final display image
+                # ------------------------------------------------
+                if found_results:
+                    if len(found_results) == 1:
+                        output = draw_result(
+                            image_rgb,
+                            found_results[0][1],
+                            found_results[0][0]
+                        )
+                    else:
+                        output = draw_multiple_results(
+                            image_rgb,
+                            found_results
+                        )
+
+                    st.session_state.result_image = output
+                else:
+                    st.session_state.result_image = image_rgb
+
                 st.session_state.runtime_seconds = (
-                    time.time() - start_time
+                    time.time()
+                    - start_time
                 )
 
                 st.session_state.profile_timings = {
+                    "Cache used": (
+                        1
+                        if cache_used
+                        else 0
+                    ),
                     "RF-DETR": detector_seconds,
                     "Prepare detections": prepare_seconds,
                     "OCR + classifier analysis": analyze_seconds,
@@ -2435,6 +2787,16 @@ if search_clicked:
                     "Classifier calls": classifier_calls,
                     "Total": st.session_state.runtime_seconds,
                 }
+
+                st.session_state.result_html = (
+                    "MULTI_RESULT",
+                    requested_books,
+                    selected_queries,
+                    found_results,
+                    not_found_books,
+                    unresolved_queries,
+                    cache_used
+                )
 
             except Exception as exc:
                 st.session_state.result_image = None
@@ -2473,46 +2835,133 @@ else:
 
 if st.session_state.result_html is None:
     right.info(
-        "Upload a bookshelf photo, enter a book title or author, "
-        "and click **Find My Book**."
+        "Upload a bookshelf photo, choose one or more books, "
+        "and click **Find My Book(s)**."
     )
 else:
     state = st.session_state.result_html[0]
 
-    if state == "FOUND":
-        _, requested_book, original_query, result = (
-            st.session_state.result_html
-        )
+    if state == "MULTI_RESULT":
+        (
+            _,
+            requested_books,
+            original_queries,
+            found_results,
+            not_found_books,
+            unresolved_queries,
+            cache_used
+        ) = st.session_state.result_html
 
-        title, author = DISPLAY[requested_book]
-        runtime = st.session_state.runtime_seconds
+        if found_results:
+            if len(found_results) == 1:
+                requested_book, result = (
+                    found_results[0]
+                )
 
-        right.success(
-            f"👀 PEEK-A-BOOK!  There you are, **{title}**! 📖\n\n"
-            f"Picky spotted it hiding on the shelf."
-        )
+                title, author = DISPLAY[
+                    requested_book
+                ]
 
-        if author:
-            right.markdown(f"**Author:** {author}")
+                right.success(
+                    f"👀 PEEK-A-BOOK! There you are, "
+                    f"**{title}**! 📖\n\n"
+                    f"Picky spotted it hiding on the shelf."
+                )
 
-        right.markdown(
-            f"**Confidence:** {result['final_score']:.1f}%  \n"
-            f"**Search time:** {runtime:.1f} sec"
-            if runtime is not None
-            else f"**Confidence:** {result['final_score']:.1f}%"
-        )
+                if author:
+                    right.markdown(
+                        f"**Author:** {author}"
+                    )
 
-        if clean_user_query(original_query) != clean_user_query(title):
-            right.info(
-                f"✨ Picky understood **{original_query}** as **{title}**."
+                right.markdown(
+                    f"**Confidence:** "
+                    f"{result['final_score']:.1f}%"
+                )
+
+            else:
+                right.success(
+                    f"👀 **PEEK-A-BOOK! Picky found "
+                    f"{len(found_results)} books!** 📚"
+                )
+
+                for requested_book, result in found_results:
+                    title, author = DISPLAY[
+                        requested_book
+                    ]
+
+                    author_text = (
+                        f" — {author}"
+                        if author
+                        else ""
+                    )
+
+                    right.markdown(
+                        f"✅ **{title}**{author_text} "
+                        f"— {result['final_score']:.1f}%"
+                    )
+
+            if cache_used:
+                right.info(
+                    "⚡ This shelf was already analyzed, "
+                    "so Picky reused the cached shelf results."
+                )
+
+            right.success(
+                "🎉 **NOW... PICK YOUR BOOK"
+                + (
+                    "S"
+                    if len(found_results) > 1
+                    else ""
+                )
+                + "! 📚**"
             )
 
-        right.success("🎉 **NOW... PICK YOUR BOOK! 📚**")
+        if not_found_books:
+            missing_titles = [
+                DISPLAY[book][0]
+                for book in not_found_books
+            ]
+
+            right.warning(
+                "🙈 **Not confidently found:** "
+                + ", ".join(
+                    missing_titles
+                )
+            )
+
+        if unresolved_queries:
+            right.warning(
+                "🤔 **Picky couldn't understand:** "
+                + ", ".join(
+                    unresolved_queries
+                )
+            )
+
+        runtime = st.session_state.runtime_seconds
+
+        if runtime is not None:
+            right.markdown(
+                f"**Search time:** {runtime:.1f} sec"
+            )
 
         if st.session_state.profile_timings:
-            with right.expander("⏱️ Performance details"):
-                for stage, value in st.session_state.profile_timings.items():
-                    if stage in [
+            with right.expander(
+                "⏱️ Performance details"
+            ):
+                for stage, value in (
+                    st.session_state.profile_timings.items()
+                ):
+                    if stage == "Cache used":
+                        st.write(
+                            "Cache used: **"
+                            + (
+                                "Yes"
+                                if int(value) == 1
+                                else "No"
+                            )
+                            + "**"
+                        )
+                    elif stage in [
                         "OCR calls",
                         "Classifier calls"
                     ]:
@@ -2524,27 +2973,20 @@ else:
                             f"{stage}: **{value:.1f} sec**"
                         )
 
-    elif state == "NOT_FOUND":
-        _, requested_book, original_query = (
+    elif state == "MESSAGE":
+        _, heading, message = (
             st.session_state.result_html
         )
 
-        title = DISPLAY[requested_book][0]
-
         right.warning(
-            f"🙈 **No Peek-a-Book this time!**\n\n"
-            f"Picky searched the shelf but couldn't confidently spot "
-            f"**{title}**.\n\n"
-            f"Try a clearer shelf photo, move slightly closer, "
-            f"or make sure the spine is visible."
+            f"**{heading}**\n\n{message}"
         )
 
-    elif state == "MESSAGE":
-        _, heading, message = st.session_state.result_html
-        right.warning(f"**{heading}**\n\n{message}")
-
     elif state == "ERROR":
-        _, message = st.session_state.result_html
+        _, message = (
+            st.session_state.result_html
+        )
+
         right.error(
             "⚠️ Picky ran into a problem while searching.\n\n"
             f"{message}"
