@@ -663,78 +663,6 @@ def classify_crop(crop):
     }
 
 
-def classify_crops_batch(crops):
-    """
-    Classify many book crops in one model.predict() call.
-
-    This preserves the same model, preprocessing, class order,
-    and output format as classify_crop(), while reducing repeated
-    TensorFlow inference overhead.
-    """
-    if not crops:
-        return []
-
-    processed_batch = np.concatenate(
-        [
-            preprocess_classifier_crop(
-                crop
-            )
-            for crop in crops
-        ],
-        axis=0
-    )
-
-    batch_predictions = model.predict(
-        processed_batch,
-        verbose=0
-    )
-
-    results = []
-
-    for predictions in batch_predictions:
-        predicted_index = int(
-            np.argmax(
-                predictions
-            )
-        )
-
-        confidence = float(
-            predictions[
-                predicted_index
-            ]
-        )
-
-        predicted_class = class_names[
-            predicted_index
-        ]
-
-        top_indices = np.argsort(
-            predictions
-        )[-3:][::-1]
-
-        top3 = []
-
-        for index in top_indices:
-            top3.append({
-                "class": class_names[
-                    index
-                ],
-                "confidence": float(
-                    predictions[
-                        index
-                    ]
-                )
-            })
-
-        results.append({
-            "predicted_class": predicted_class,
-            "confidence": confidence,
-            "top3": top3
-        })
-
-    return results
-
-
 # ============================================================
 # NMS
 # ============================================================
@@ -982,263 +910,6 @@ def analyze_detections(
         })
 
     return analyzed
-
-
-def _best_catalog_score_for_text(
-    cleaned_text
-):
-    """
-    Score one OCR string against every known catalogue book.
-
-    Used only to decide whether 180°/270° OCR is still needed
-    during full-shelf cache building.
-    """
-    if not cleaned_text:
-        return 0.0
-
-    best_score = 0.0
-
-    for book_key in BOOK_METADATA:
-        score_info = score_book_strict(
-            cleaned_text,
-            BOOK_METADATA[
-                book_key
-            ]
-        )
-
-        strict_score = float(
-            score_info[
-                "final_score"
-            ]
-        )
-
-        keyword_info = keyword_ocr_rescue(
-            cleaned_text,
-            book_key
-        )
-
-        keyword_score = (
-            float(
-                keyword_info[
-                    "score"
-                ]
-            )
-            if keyword_info[
-                "matched"
-            ]
-            else 0.0
-        )
-
-        score = max(
-            strict_score,
-            keyword_score
-        )
-
-        if score > best_score:
-            best_score = score
-
-    return best_score
-
-
-def analyze_shelf_for_cache_optimized(
-    image_rgb,
-    detections
-):
-    """
-    Faster full-shelf analysis for multi-book search/cache.
-
-    Improvements:
-    1. OCR 0° + 90° first.
-    2. OCR 180° + 270° only if the first two rotations do not
-       already strongly match any known catalogue book.
-    3. Classify all crops in ONE TensorFlow batch instead of
-       one model.predict() call per crop.
-
-    Models, OCR engine, thresholds, preprocessing, metadata,
-    and final locate_phone_book() matching rules stay the same.
-    """
-    analyzed = []
-    crops_for_batch = []
-
-    ocr_calls = 0
-
-    for item in detections:
-        x1, y1, x2, y2 = item[
-            "box"
-        ]
-
-        crop = image_rgb[
-            y1:y2,
-            x1:x2
-        ].copy()
-
-        if crop.size == 0:
-            continue
-
-        primary_rotations = [
-            (
-                "0",
-                crop
-            ),
-            (
-                "90",
-                cv2.rotate(
-                    crop,
-                    cv2.ROTATE_90_CLOCKWISE
-                )
-            )
-        ]
-
-        fallback_rotations = [
-            (
-                "180",
-                cv2.rotate(
-                    crop,
-                    cv2.ROTATE_180
-                )
-            ),
-            (
-                "270",
-                cv2.rotate(
-                    crop,
-                    cv2.ROTATE_90_COUNTERCLOCKWISE
-                )
-            )
-        ]
-
-        rotation_results = []
-        best_catalog_score = 0.0
-
-        def _run_one_rotation(
-            angle,
-            rotated_crop
-        ):
-            nonlocal ocr_calls
-            nonlocal best_catalog_score
-
-            ocr_calls += 1
-
-            results = reader.readtext(
-                rotated_crop,
-                detail=1,
-                paragraph=False
-            )
-
-            detected_text = []
-            confidences = []
-
-            for _, detected, confidence in results:
-                if confidence >= 0.15:
-                    detected_text.append(
-                        detected
-                    )
-                    confidences.append(
-                        confidence
-                    )
-
-            combined_text = " ".join(
-                detected_text
-            )
-
-            cleaned_text = clean_ocr_text(
-                combined_text
-            )
-
-            avg_conf = (
-                float(
-                    np.mean(
-                        confidences
-                    )
-                )
-                if confidences
-                else 0.0
-            )
-
-            rotation_results.append({
-                "rotation": angle,
-                "text": cleaned_text,
-                "confidence": avg_conf
-            })
-
-            if cleaned_text:
-                score = (
-                    _best_catalog_score_for_text(
-                        cleaned_text
-                    )
-                )
-
-                if score > best_catalog_score:
-                    best_catalog_score = score
-
-        # First pass: 0° and 90°
-        for angle, rotated_crop in primary_rotations:
-            _run_one_rotation(
-                angle,
-                rotated_crop
-            )
-
-        # Fallback pass only when primary OCR did not already
-        # strongly identify a known catalogue book.
-        if (
-            best_catalog_score
-            < PROGRESSIVE_OCR_STRONG_THRESHOLD
-        ):
-            for angle, rotated_crop in fallback_rotations:
-                _run_one_rotation(
-                    angle,
-                    rotated_crop
-                )
-
-        analyzed.append({
-            "index": item[
-                "index"
-            ],
-            "confidence": item[
-                "confidence"
-            ],
-            "box": item[
-                "box"
-            ],
-            "crop": crop,
-            "ocr_rotation_results": rotation_results,
-            "classifier_scores": None
-        })
-
-        crops_for_batch.append(
-            crop
-        )
-
-    # One TensorFlow inference call for the whole shelf.
-    classifier_results = (
-        classify_crops_batch(
-            crops_for_batch
-        )
-    )
-
-    for analyzed_item, classifier_result in zip(
-        analyzed,
-        classifier_results
-    ):
-        analyzed_item[
-            "classifier_scores"
-        ] = classifier_result
-
-    classifier_predict_calls = (
-        1
-        if classifier_results
-        else 0
-    )
-
-    classifier_items = len(
-        classifier_results
-    )
-
-    return (
-        analyzed,
-        ocr_calls,
-        classifier_predict_calls,
-        classifier_items
-    )
 
 
 # ============================================================
@@ -2773,6 +2444,13 @@ with left:
 
 
 # ============================================================
+# SAFE MULTI-BOOK + CACHE VERSION
+# Uses the proven Stage 3 full-shelf analysis path.
+# Stage 4 batch/full-shelf optimization was intentionally removed
+# because it produced false-positive 100% matches on unseen books.
+# ============================================================
+
+# ============================================================
 # PROCESS SEARCH
 # ============================================================
 
@@ -2834,7 +2512,6 @@ if search_clicked:
                 match_seconds = 0.0
                 ocr_calls = 0
                 classifier_calls = 0
-                classifier_items = 0
                 cache_used = False
 
                 bytes_data = source_file.getvalue()
@@ -2888,14 +2565,6 @@ if search_clicked:
                         st.session_state.shelf_cache_analyzed
                     )
 
-                    if st.session_state.shelf_cache_timings:
-                        classifier_items = int(
-                            st.session_state.shelf_cache_timings.get(
-                                "Classifier items",
-                                0
-                            )
-                        )
-
                 # ------------------------------------------------
                 # MULTI-BOOK SEARCH:
                 # Analyze the entire shelf once and cache it.
@@ -2927,18 +2596,24 @@ if search_clicked:
                     if detections:
                         t_analyze = _now()
 
-                        (
-                            analyzed,
-                            ocr_calls,
-                            classifier_calls,
-                            classifier_items
-                        ) = analyze_shelf_for_cache_optimized(
+                        analyzed = analyze_detections(
                             image_rgb,
                             detections
                         )
 
                         analyze_seconds = _elapsed(
                             t_analyze
+                        )
+
+                        # analyze_detections performs four OCR
+                        # rotations + one classifier call per crop.
+                        ocr_calls = (
+                            len(analyzed)
+                            * 4
+                        )
+
+                        classifier_calls = len(
+                            analyzed
                         )
 
                         st.session_state.shelf_cache_hash = (
@@ -2963,7 +2638,6 @@ if search_clicked:
                             "Shelf analysis": analyze_seconds,
                             "OCR calls": ocr_calls,
                             "Classifier calls": classifier_calls,
-                            "Classifier items": classifier_items,
                         }
                     else:
                         analyzed = []
@@ -3007,6 +2681,8 @@ if search_clicked:
                 if cache_used or len(requested_books) > 1:
                     t_match = _now()
 
+                    used_detection_indices = set()
+
                     for requested_book in requested_books:
                         result = locate_phone_book(
                             analyzed,
@@ -3017,13 +2693,30 @@ if search_clicked:
                             not_found_books.append(
                                 requested_book
                             )
-                        else:
-                            found_results.append(
-                                (
-                                    requested_book,
-                                    result
-                                )
+                            continue
+
+                        detection_index = result.get(
+                            "index"
+                        )
+
+                        # One physical book crop can represent only
+                        # one requested book in the same result set.
+                        if detection_index in used_detection_indices:
+                            not_found_books.append(
+                                requested_book
                             )
+                            continue
+
+                        used_detection_indices.add(
+                            detection_index
+                        )
+
+                        found_results.append(
+                            (
+                                requested_book,
+                                result
+                            )
+                        )
 
                     match_seconds = _elapsed(
                         t_match
@@ -3118,7 +2811,6 @@ if search_clicked:
                     "Final matching": match_seconds,
                     "OCR calls": ocr_calls,
                     "Classifier calls": classifier_calls,
-                    "Classifier items": classifier_items,
                     "Total": st.session_state.runtime_seconds,
                 }
 
@@ -3297,8 +2989,7 @@ else:
                         )
                     elif stage in [
                         "OCR calls",
-                        "Classifier calls",
-                        "Classifier items"
+                        "Classifier calls"
                     ]:
                         st.write(
                             f"{stage}: **{int(value)}**"
